@@ -8,6 +8,8 @@ Coolify. The Compose file preserves Sablier's 10-minute idle sessions and its
 
 After deployment, https://sablier.hesamian.com/ returns a server-rendered HTML
 status page rendered with [Pug](./status/views/status.pug).
+It uses Bootstrap 5.3.8 CSS from jsDelivr: running groups have green success
+badges; all other statuses have red danger badges. Styling requires CDN access.
 `/status` returns the same page; `/health` returns JSON and also
 checks access to Docker. The page refreshes only when requested, not automatically,
 so an open browser tab does not keep the service awake.

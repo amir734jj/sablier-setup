@@ -4,30 +4,19 @@ html(lang="en")
     meta(charset="utf-8")
     meta(name="viewport" content="width=device-width, initial-scale=1")
     title Container status
-    style.
-      :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
-      body { max-width: 64rem; margin: auto; padding: 2rem 1rem; line-height: 1.5; }
-      h1 { margin-bottom: .5rem; }
-      .table { overflow-x: auto; }
-      table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; }
-      th, td { padding: .8rem; border-bottom: 1px solid #888; text-align: left; overflow-wrap: anywhere; }
-      .badge { display: inline-block; padding: .2rem .6rem; border: 1px solid; border-radius: 1rem; }
-      .running { color: light-dark(#166534, #86efac); }
-      .stopped { color: light-dark(#475569, #cbd5e1); }
-      .partially_running, .attention { color: light-dark(#854d0e, #fde047); }
-      footer { margin-top: 2rem; }
-  body
-    main
-      h1 Container status
+    link(rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" integrity="sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB" crossorigin="anonymous")
+  body.bg-body-tertiary
+    main.container.py-5
+      h1.mb-3 Container status
       if message
-        p= message
+        p.alert.alert-danger(role="alert")= message
       else
-        p
+        p.text-body-secondary
           | Last checked: 
           time(datetime=status.checked_at)= status.checked_at
         if status.groups.length
-          .table
-            table
+          .table-responsive
+            table.table.table-striped.align-middle
               thead
                 tr
                   th(scope="col") Group
@@ -36,12 +25,12 @@ html(lang="en")
               tbody
                 each group in status.groups
                   tr
-                    th(scope="row")= group.group
+                    th.text-break(scope="row")= group.group
                     td
-                      span.badge(class=group.status)= group.status.replaceAll("_", " ")
-                    td= Object.entries(group.states).map(([name, count]) => `${name}: ${count}`).join(", ")
+                      span.badge(class=group.status === "running" ? "text-bg-success" : "text-bg-danger")= group.status.replaceAll("_", " ")
+                    td.text-break= Object.entries(group.states).map(([name, count]) => `${name}: ${count}`).join(", ")
         else
-          p No Sablier-enabled containers found.
+          p.alert.alert-info No Sablier-enabled containers found.
         p
-          a(href="") Refresh status
-        footer= status.note
+          a.btn.btn-outline-primary(href="") Refresh status
+        footer.mt-4.text-body-secondary= status.note
