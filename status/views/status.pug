@@ -13,7 +13,7 @@ html(lang="en")
       else
         p.text-body-secondary
           | Last checked: 
-          time(datetime=status.checked_at)= status.checked_at
+          time(datetime=status.checked_at)= formatTime(status.checked_at)
         if status.groups.length
           .table-responsive
             table.table.table-striped.align-middle
@@ -35,7 +35,7 @@ html(lang="en")
                       td
                         if group[field]
                           time(datetime=group[field] title=group[field])= relativeTime(group[field], status.checked_at)
-                          small.d-block.text-body-secondary= group[field].replace("T", " ").replace(".000Z", " UTC")
+                          small.d-block.text-body-secondary= formatTime(group[field])
                         else
                           span.text-body-secondary Not available
         else

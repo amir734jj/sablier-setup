@@ -1,59 +1,76 @@
 import express from "express";
+import _ from "lodash";
+import { DateTime } from "luxon";
 import { createServer } from "node:http";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+function parseTime(value) {
+  if (typeof value !== "string") throw new Error("Invalid Docker lifecycle timestamp");
+  const timestamp = DateTime.fromISO(value, { zone: "utc" });
+  if (!timestamp.isValid) throw new Error("Invalid Docker lifecycle timestamp");
+  return timestamp;
+}
+
 function lifecycleTime(value) {
   if (value === undefined || value === null) return null;
-  if (typeof value !== "string") throw new Error("Invalid Docker lifecycle timestamp");
-  if (value.startsWith("0001-01-01")) return null;
-  const timestamp = Date.parse(value);
-  if (!Number.isFinite(timestamp)) throw new Error("Invalid Docker lifecycle timestamp");
-  return new Date(timestamp).toISOString();
+  const timestamp = parseTime(value);
+  return timestamp.equals(DateTime.utc(1, 1, 1)) ? null : timestamp.toISO();
+}
+
+export function formatTime(value) {
+  return parseTime(value).toFormat("yyyy-MM-dd HH:mm:ss.SSS 'UTC'");
 }
 
 export function relativeTime(value, checkedAt) {
   if (!value) return "Not available";
-  const seconds = Math.max(0, Math.floor((Date.parse(checkedAt) - Date.parse(value)) / 1000));
-  for (const [unit, size] of [["day", 86400], ["hour", 3600], ["minute", 60], ["second", 1]]) {
-    if (seconds >= size || size === 1) {
-      const count = Math.floor(seconds / size);
-      return `${count} ${unit}${count === 1 ? "" : "s"} ago`;
-    }
-  }
+  const timestamp = parseTime(value);
+  const base = parseTime(checkedAt);
+  if (timestamp >= base) return "0 seconds ago";
+  return timestamp.toRelative({
+    base,
+    unit: ["days", "hours", "minutes", "seconds"],
+    locale: "en",
+    numeric: "always",
+    round: true,
+  });
 }
 
 export function summarize(containers) {
   if (!Array.isArray(containers)) {
     throw new Error("Docker status API did not return a list");
   }
-  const groups = new Map();
-  const times = new Map();
-  for (const { Labels: labels, State: state, StartedAt, FinishedAt } of containers) {
+  const enabled = containers.filter(({ Labels: labels, State: state }) => {
     if (!labels || typeof labels !== "object" || typeof state !== "string") {
       throw new Error("Invalid Docker container status");
     }
-    if (labels["sablier.enable"] !== "true") continue;
+    return labels["sablier.enable"] === "true";
+  }).map(({ Labels: labels, State: state, StartedAt, FinishedAt }) => {
     const group = labels["sablier.group"] || "(ungrouped)";
     if (typeof group !== "string") throw new Error("Invalid Sablier group");
-    const counts = groups.get(group) ?? new Map();
-    counts.set(state, (counts.get(state) ?? 0) + 1);
-    groups.set(group, counts);
-    const timing = times.get(group) ?? { last_started_at: null, last_stopped_at: null };
-    for (const [key, value] of [["last_started_at", StartedAt], ["last_stopped_at", FinishedAt]]) {
-      const timestamp = lifecycleTime(value);
-      if (timestamp && (!timing[key] || timestamp > timing[key])) timing[key] = timestamp;
-    }
-    times.set(group, timing);
-  }
+    return {
+      group,
+      state,
+      last_started_at: lifecycleTime(StartedAt),
+      last_stopped_at: lifecycleTime(FinishedAt),
+    };
+  });
+  const groups = _.groupBy(enabled, "group");
   return {
-    checked_at: new Date().toISOString(),
-    groups: [...groups].sort(([a], [b]) => a.localeCompare(b)).map(([group, counts]) => {
-      const states = [...counts.keys()];
+    checked_at: DateTime.utc().toISO(),
+    groups: Object.entries(groups).sort(([a], [b]) => a.localeCompare(b)).map(([group, members]) => {
+      const counts = _.countBy(members, "state");
+      const states = Object.keys(counts);
       const status = states.every(state => state === "running") ? "running"
         : states.every(state => state === "exited") ? "stopped"
         : states.every(state => ["running", "exited"].includes(state)) ? "partially_running"
         : "attention";
-      return { group, status, states: Object.fromEntries([...counts].sort()), ...times.get(group) };
+      return {
+        group,
+        status,
+        states: Object.fromEntries(Object.entries(counts).sort()),
+        last_started_at: _.maxBy(members, "last_started_at")?.last_started_at ?? null,
+        last_stopped_at: _.maxBy(members, "last_stopped_at")?.last_stopped_at ?? null,
+      };
     }),
     note: "Stopped does not distinguish idle sleep from manual stops or failures.",
   };
@@ -98,6 +115,7 @@ export function createApp(loadStatus = readStatus) {
   app.set("view engine", "pug");
   app.set("views", fileURLToPath(new URL("./views/", import.meta.url)));
   app.locals.relativeTime = relativeTime;
+  app.locals.formatTime = formatTime;
   app.use((_request, response, next) => {
     response.set({ "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
     next();

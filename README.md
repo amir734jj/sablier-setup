@@ -249,6 +249,9 @@ docker compose up -d --build
 
 The single Express webserver is [status/server.js](./status/server.js). Its
 Dockerfile and npm manifests are also in [status](./status).
+The status service uses Lodash to group containers, count states, and select
+the latest lifecycle timestamps. Luxon handles ISO timestamp parsing, UTC
+formatting, and relative ages.
 Both Docker images use
 `node:lts-alpine`. The webserver runs
 unprivileged with a read-only filesystem, and has no Docker socket mount.

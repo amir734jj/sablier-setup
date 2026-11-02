@@ -11,6 +11,8 @@
   },
   "dependencies": {
     "express": "5.1.0",
+    "lodash": "4.17.21",
+    "luxon": "3.7.2",
     "pug": "3.0.4"
   }
 }
