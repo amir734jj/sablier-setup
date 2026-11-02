@@ -4,6 +4,44 @@ import { parseTime } from "./shared/format.js";
 
 const MAX_CONCURRENT_READS = 8;
 
+function isQuotedHost(value) {
+  const quote = value[0];
+  const host = value.slice(1, -1);
+
+  return (quote === "`" || quote === '"') && value.endsWith(quote) &&
+    host.length > 0 && !host.includes(quote) && !host.includes("\\");
+}
+
+function isHostname(host) {
+  return host.length <= 253 && host.split(".").every(part =>
+    part.length > 0 && part.length <= 63 &&
+    !part.startsWith("-") && !part.endsWith("-") &&
+    /^[a-z0-9-]+$/.test(part));
+}
+
+function containerUrls(labels) {
+  if (labels["traefik.enable"] === "false") return [];
+
+  return Object.entries(labels)
+    .filter(([key, rule]) =>
+      key.startsWith("traefik.http.routers.") && key.endsWith(".rule") &&
+      typeof rule === "string" && !rule.includes("!"))
+    .flatMap(([key, rule]) => {
+      const router = key.slice(0, -".rule".length);
+      const tls = labels[`${router}.tls`];
+      const secure = tls !== "false" && (tls === "true" ||
+        Object.keys(labels).some(label => label.startsWith(`${router}.tls.`)));
+      const scheme = secure ? "https" : "http";
+
+      return [...rule.matchAll(/\bHost\(([^()]*)\)/g)]
+        .map(match => match[1].split(",").map(value => value.trim()))
+        .filter(argumentsList => argumentsList.every(isQuotedHost))
+        .flatMap(argumentsList => argumentsList.map(value => value.slice(1, -1).toLowerCase()))
+        .filter(isHostname)
+        .map(host => `${scheme}://${host}`);
+    });
+}
+
 function lifecycleTime(value) {
   if (value === undefined || value === null) return null;
 
@@ -31,6 +69,7 @@ export function summarize(containers) {
     return {
       group,
       state,
+      urls: containerUrls(labels),
       last_started_at: lifecycleTime(StartedAt),
       last_stopped_at: lifecycleTime(FinishedAt),
     };
@@ -52,6 +91,7 @@ export function summarize(containers) {
         group,
         status,
         states: Object.fromEntries(Object.entries(counts).sort()),
+        urls: [...new Set(members.flatMap(member => member.urls))].sort(),
         last_started_at: _.maxBy(members, "last_started_at")?.last_started_at ?? null,
         last_stopped_at: _.maxBy(members, "last_stopped_at")?.last_stopped_at ?? null,
       };
@@ -77,16 +117,15 @@ async function readProxy(path, fetchDocker) {
 
   if (!response.ok) throw new Error(`Docker status API returned HTTP ${response.status}`);
 
-  const chunks = [];
   let size = 0;
 
-  for await (const chunk of response.body) {
+  const chunks = await Array.fromAsync(response.body, chunk => {
     size += chunk.length;
 
     if (size > 2_000_000) throw new Error("Docker status response exceeds size limit");
 
-    chunks.push(chunk);
-  }
+    return chunk;
+  });
 
   try {
     return JSON.parse(Buffer.concat(chunks).toString("utf8"));
@@ -108,16 +147,17 @@ export async function readEvents(fetchDocker = fetch) {
 
   parseTime(data.checked_at);
 
-  for (const event of [...data.events, ...data.diagnostics]) {
-    if (!event || !(event.group === null || typeof event.group === "string") ||
-        typeof event.type !== "string" || !["info", "warning", "error"].includes(event.severity) ||
-        typeof event.explanation !== "string") throw new Error("Invalid Sablier diagnostic event");
+  if (![...data.events, ...data.diagnostics].every(event =>
+    event && (event.group === null || typeof event.group === "string") &&
+    typeof event.type === "string" && ["info", "warning", "error"].includes(event.severity) &&
+    typeof event.explanation === "string")) {
+    throw new Error("Invalid Sablier diagnostic event");
   }
 
-  for (const event of data.events) parseTime(event.timestamp);
+  data.events.forEach(event => parseTime(event.timestamp));
 
-  for (const item of data.diagnostics) {
-    if (!Number.isSafeInteger(item.count) || item.count < 1) throw new Error("Invalid Sablier diagnostic count");
+  if (!data.diagnostics.every(item => Number.isSafeInteger(item.count) && item.count >= 1)) {
+    throw new Error("Invalid Sablier diagnostic count");
   }
 
   return data;

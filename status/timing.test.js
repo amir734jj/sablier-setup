@@ -24,6 +24,67 @@ test("groups the most recent independent start and stop times", () => {
   assert.equal(group.last_stopped_at, "2026-11-02T11:00:00.000Z");
 });
 
+test("collects sorted unique router URLs across running and stopped group members", () => {
+  const routed = (state, labels) => ({
+    ...container(state, null, null),
+    Labels: { ...container(state).Labels, ...labels },
+  });
+  const { groups: [group] } = summarize([
+    routed("running", {
+      "traefik.http.routers.app.rule": 'Host(`APP.example.com`, "alias.example.com") && PathPrefix(`/app`)',
+      "traefik.http.routers.app.tls": "true",
+      "traefik.http.routers.redirect.rule": "Host(`app.example.com`)",
+    }),
+    routed("exited", {
+      "traefik.http.routers.other.rule": "Host(`app.example.com`) || Host(`stopped.example.com`)",
+      "traefik.http.routers.other.tls.certresolver": "letsencrypt",
+    }),
+  ]);
+
+  assert.deepEqual(group.urls, [
+    "http://app.example.com", "https://alias.example.com",
+    "https://app.example.com", "https://stopped.example.com",
+  ]);
+  assert.equal(group.status, "partially_running");
+  assert.equal(JSON.stringify(group).includes("certresolver"), false);
+});
+
+test("does not invent URLs for missing, disabled, wildcard, negated, or unsafe routes", () => {
+  for (const labels of [
+    {},
+    { "traefik.enable": "false", "traefik.http.routers.app.rule": "Host(`hidden.example.com`)" },
+    { "traefik.tcp.routers.app.rule": "HostSNI(`tcp.example.com`)" },
+    { "traefik.http.routers.app.rule": "HostRegexp(`[a-z]+.example.com`)" },
+    { "traefik.http.routers.app.rule": "! (Host(`excluded.example.com`))" },
+    { "traefik.http.routers.app.rule": "Host(`*.example.com`, `user@example.com`, `evil.com/path`, `javascript:alert`, `bad..com`)" },
+    { "traefik.http.routers.app.rule": 'Host("bad\\n.example.com")' },
+    { "traefik.http.routers.app.rule": "Host(`broken.example.com`, invalid)" },
+    { "traefik.http.routers.app.rule": 'Host(`mismatched.example.com")' },
+    { "traefik.http.routers.app.rule": "Host(`embedded`quote.example.com`)" },
+    { "traefik.http.routers.app.rule": "Host(`valid.example.com`,)" },
+    { "traefik.http.routers.app.rule": "Host(`-invalid.example.com`, `invalid-.example.com`)" },
+  ]) {
+    const item = container("running", null, null);
+    Object.assign(item.Labels, labels);
+    assert.deepEqual(summarize([item]).groups[0].urls, [], JSON.stringify(labels));
+  }
+});
+
+test("keeps explicit non-TLS routers HTTP and separates group URLs", () => {
+  const first = container("running", null, null);
+  Object.assign(first.Labels, {
+    "traefik.http.routers.app.rule": 'Host("first.example.com")',
+    "traefik.http.routers.app.tls": "false",
+    "traefik.http.routers.app.tls.certresolver": "letsencrypt",
+  });
+  const second = container("exited", null, null);
+  second.Labels["sablier.group"] = "other";
+  second.Labels["traefik.http.routers.app.rule"] = "Host(`second.example.com`)";
+
+  assert.deepEqual(summarize([first, second]).groups.map(group => group.urls),
+    [["http://first.example.com"], ["http://second.example.com"]]);
+});
+
 test("handles missing and Docker zero timestamps without inventing history", () => {
   for (const value of [undefined, null, "0001-01-01T00:00:00Z", "0001-01-01T00:00:00.000000000Z"]) {
     const { groups: [group] } = summarize([container("created", value, value)]);

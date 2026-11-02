@@ -50,6 +50,17 @@ deployment). Paused, exited, and other non-running states still count toward the
 Only containers labelled `sablier.enable=true` are included, grouped by
 `sablier.group`. The response contains a UTC timestamp, group names, aggregate
 status, and counts of actual Docker states.
+Each group also includes a sorted, deduplicated `urls` list and clickable links
+from its containers' Traefik HTTP router `Host(...)` labels, including stopped
+containers. Only literal hostnames are supported; wildcard `HostRegexp` and
+negated rules are not inferred. Routers with TLS enabled (`tls=true` or `tls.*`
+options) use HTTPS; otherwise links use HTTP. Entry-point defaults, custom ports,
+and path rules are not inferred: links point to the host root, not necessarily
+the application's path. Containers with `traefik.enable=false` are excluded from
+URL discovery. Groups without discoverable URLs show "Not available".
+These hostnames are public in both the dashboard and JSON; other routing labels
+are not exposed. Clicking a link may wake that application through Sablier;
+displaying the links does not request the applications.
 The page also shows the most recent Docker start and stop timestamps in each
 group, with relative ages and exact UTC times available on hover. These are lifecycle times, not
 last-request activity. A running container's last stop can refer to its previous

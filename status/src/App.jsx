@@ -53,6 +53,19 @@ function GroupRow({ group, now }) {
   return (
     <tr>
       <th scope="row" class="text-break">{group.group}</th>
+      <td class="text-break" data-label="URLs">
+        {group.urls.length ? (
+          <ul class="list-unstyled mb-0">
+            {group.urls.map(url => (
+              <li key={url}>
+                <a href={url} target="_blank" rel="noopener noreferrer">{url}</a>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <span class="text-body-secondary">Not available</span>
+        )}
+      </td>
       <td data-label="Status">
         <span class={`badge ${group.status === "running" ? "text-bg-success" : "text-bg-danger"}`}>
           {group.status.replaceAll("_", " ")}
@@ -106,7 +119,7 @@ function StatusPanel({ data, now }) {
       </p>
       <RunningProgress groups={data.groups} />
       {data.groups.length ? (
-        <Table headings={["Group", "Status", "Container states", "Last started", "Last stopped"]}>
+        <Table headings={["Group", "URLs", "Status", "Container states", "Last started", "Last stopped"]}>
           {data.groups.map(group => (
             <GroupRow key={group.group} group={group} now={now} />
           ))}
