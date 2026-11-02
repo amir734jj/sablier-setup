@@ -28,8 +28,8 @@ failures can have the same Docker state. Reading this endpoint wakes the status
 webserver if necessary and refreshes its own 10-minute session; it does not wake
 other application groups. Undeployed applications are not included.
 
-The status webserver belongs to `sablier.group=my-app` and sleeps when idle.
-Do not reuse `my-app` for unrelated apps. A request to its HTTPS route passes
+The status webserver belongs to `sablier.group=sablier-status` and sleeps when idle.
+Do not reuse `sablier-status` for unrelated apps. A request to its HTTPS route passes
 through the Compose-defined blocking wake middleware before reaching Express.
 Consequently, the status service reports its own group as running while you
 view it; use an SSH container check to observe its sleeping state.
@@ -73,7 +73,7 @@ The Compose labels already route `sablier.hesamian.com` to the status service's
 internal port 8080, enable HTTPS, and redirect HTTP to HTTPS. Do not add a public
 route or publish a host port for Sablier's internal API or the Docker proxy.
 Sablier itself and `docker-status-proxy` must remain running. Only the Node.js
-`status` service opts into sleep, using the `my-app` group and a 10-minute session.
+`status` service opts into sleep, using the `sablier-status` group and a 10-minute session.
 Its Docker health check runs directly against localhost and does not go through
 the wake middleware.
 
@@ -211,7 +211,7 @@ Redeploy the target application or stack to apply the labels.
    Background polling and HTTP monitoring through its router can extend the
    session.
 3. Check https://sablier.hesamian.com/ for the group's `stopped` status.
-   Reading this status service wakes only its own `my-app` group, not the target
+   Reading this status service wakes only its own `sablier-status` group, not the target
    application's group.
 4. Open the target app again. Depending on the middleware, the request waits or
    shows a loading page while the group starts.
