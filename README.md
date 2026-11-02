@@ -58,6 +58,8 @@ options) use HTTPS; otherwise links use HTTP. Entry-point defaults, custom ports
 and path rules are not inferred: links point to the host root, not necessarily
 the application's path. Containers with `traefik.enable=false` are excluded from
 URL discovery. Groups without discoverable URLs show "Not available".
+The dashboard collapses each group's links behind a keyboard-accessible
+"Show domains" disclosure; expand it to view and open the URLs.
 These hostnames are public in both the dashboard and JSON; other routing labels
 are not exposed. Clicking a link may wake that application through Sablier;
 displaying the links does not request the applications.

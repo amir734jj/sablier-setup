@@ -1,3 +1,8 @@
+.domain-links > summary {
+  cursor: pointer;
+  white-space: nowrap;
+}
+
 @media (max-width: 767.98px) {
   .status-table thead {
     position: absolute;

@@ -55,13 +55,18 @@ function GroupRow({ group, now }) {
       <th scope="row" class="text-break">{group.group}</th>
       <td class="text-break" data-label="URLs">
         {group.urls.length ? (
-          <ul class="list-unstyled mb-0">
-            {group.urls.map(url => (
-              <li key={url}>
-                <a href={url} target="_blank" rel="noopener noreferrer">{url}</a>
-              </li>
-            ))}
-          </ul>
+          <details class="domain-links">
+            <summary class="small text-primary" aria-label={`Show domains for ${group.group}`}>
+              Show domains
+            </summary>
+            <ul class="list-unstyled small font-monospace bg-body border rounded p-2 mt-2 mb-0">
+              {group.urls.map(url => (
+                <li key={url}>
+                  <a href={url} target="_blank" rel="noopener noreferrer">{url}</a>
+                </li>
+              ))}
+            </ul>
+          </details>
         ) : (
           <span class="text-body-secondary">Not available</span>
         )}
