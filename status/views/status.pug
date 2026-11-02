@@ -22,6 +22,8 @@ html(lang="en")
                   th(scope="col") Group
                   th(scope="col") Status
                   th(scope="col") Container states
+                  th(scope="col") Last started
+                  th(scope="col") Last stopped
               tbody
                 each group in status.groups
                   tr
@@ -29,8 +31,16 @@ html(lang="en")
                     td
                       span.badge(class=group.status === "running" ? "text-bg-success" : "text-bg-danger")= group.status.replaceAll("_", " ")
                     td.text-break= Object.entries(group.states).map(([name, count]) => `${name}: ${count}`).join(", ")
+                    each field in ["last_started_at", "last_stopped_at"]
+                      td
+                        if group[field]
+                          time(datetime=group[field] title=group[field])= relativeTime(group[field], status.checked_at)
+                          small.d-block.text-body-secondary= group[field].replace("T", " ").replace(".000Z", " UTC")
+                        else
+                          span.text-body-secondary Not available
         else
           p.alert.alert-info No Sablier-enabled containers found.
         p
           a.btn.btn-outline-primary(href="") Refresh status
         footer.mt-4.text-body-secondary= status.note
+        p.small.text-body-secondary Times show the most recent start and stop in each group, not last traffic. They reset when containers are replaced. A running container's last stop may belong to its previous run.

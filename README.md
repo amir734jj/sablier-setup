@@ -17,6 +17,15 @@ so an open browser tab does not keep the service awake.
 Only containers labelled `sablier.enable=true` are included, grouped by
 `sablier.group`. The response contains a UTC timestamp, group names, aggregate
 status, and counts of actual Docker states.
+The page also shows the most recent Docker start and stop timestamps in each
+group, with relative ages and exact UTC times. These are lifecycle times, not
+last-request activity. A running container's last stop can refer to its previous
+run; timestamps reset when a deployment replaces the container.
+
+The internal proxy inspects only Sablier-enabled containers and attaches only
+their start/stop timestamps to its existing list response. It does not expose
+an inspect endpoint or forward container configuration. Timing reads share the
+existing 3-second deadline, with at most 128 enabled containers per request.
 
 - `running`: all containers in the group are running.
 - `stopped`: all containers in the group are exited.

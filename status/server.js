@@ -2,12 +2,33 @@ import express from "express";
 import { createServer } from "node:http";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+function lifecycleTime(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string") throw new Error("Invalid Docker lifecycle timestamp");
+  if (value.startsWith("0001-01-01")) return null;
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) throw new Error("Invalid Docker lifecycle timestamp");
+  return new Date(timestamp).toISOString();
+}
+
+export function relativeTime(value, checkedAt) {
+  if (!value) return "Not available";
+  const seconds = Math.max(0, Math.floor((Date.parse(checkedAt) - Date.parse(value)) / 1000));
+  for (const [unit, size] of [["day", 86400], ["hour", 3600], ["minute", 60], ["second", 1]]) {
+    if (seconds >= size || size === 1) {
+      const count = Math.floor(seconds / size);
+      return `${count} ${unit}${count === 1 ? "" : "s"} ago`;
+    }
+  }
+}
+
 export function summarize(containers) {
   if (!Array.isArray(containers)) {
     throw new Error("Docker status API did not return a list");
   }
   const groups = new Map();
-  for (const { Labels: labels, State: state } of containers) {
+  const times = new Map();
+  for (const { Labels: labels, State: state, StartedAt, FinishedAt } of containers) {
     if (!labels || typeof labels !== "object" || typeof state !== "string") {
       throw new Error("Invalid Docker container status");
     }
@@ -17,6 +38,12 @@ export function summarize(containers) {
     const counts = groups.get(group) ?? new Map();
     counts.set(state, (counts.get(state) ?? 0) + 1);
     groups.set(group, counts);
+    const timing = times.get(group) ?? { last_started_at: null, last_stopped_at: null };
+    for (const [key, value] of [["last_started_at", StartedAt], ["last_stopped_at", FinishedAt]]) {
+      const timestamp = lifecycleTime(value);
+      if (timestamp && (!timing[key] || timestamp > timing[key])) timing[key] = timestamp;
+    }
+    times.set(group, timing);
   }
   return {
     checked_at: new Date().toISOString(),
@@ -26,7 +53,7 @@ export function summarize(containers) {
         : states.every(state => state === "exited") ? "stopped"
         : states.every(state => ["running", "exited"].includes(state)) ? "partially_running"
         : "attention";
-      return { group, status, states: Object.fromEntries([...counts].sort()) };
+      return { group, status, states: Object.fromEntries([...counts].sort()), ...times.get(group) };
     }),
     note: "Stopped does not distinguish idle sleep from manual stops or failures.",
   };
@@ -70,6 +97,7 @@ export function createApp(loadStatus = readStatus) {
   app.set("json spaces", 2);
   app.set("view engine", "pug");
   app.set("views", fileURLToPath(new URL("./views/", import.meta.url)));
+  app.locals.relativeTime = relativeTime;
   app.use((_request, response, next) => {
     response.set({ "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
     next();

@@ -51,12 +51,68 @@ test("denies other methods and paths without contacting Docker", async t => {
     for (const method of ["POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]) {
       assert.equal((await fetch(`${url}/containers/json`, { method })).status, 403);
     }
-    for (const path of ["/", "/info", "/containers/json/extra", "/containers/json/", "/v1.47/containers/json", "/containers/create", "/containers/%6ason"]) {
+    for (const path of ["/", "/info", "/containers/json/extra", "/containers/json/", "/v1.47/containers/json", "/containers/create", "/containers/%6ason", `/containers/${"a".repeat(64)}/json`]) {
       assert.equal((await fetch(url + path)).status, 403);
     }
     assert.equal(calls, 0);
   });
 });
+
+  test("adds only lifecycle timestamps for enabled containers", async t => {
+    const id = "a".repeat(64);
+    const paths = [];
+    await withProxy(t, (request, response) => {
+      paths.push(request.url);
+      if (request.url.split("?")[0] === "/containers/json") {
+        response.end(JSON.stringify([
+          { Id: id, Labels: { "sablier.enable": "true" } },
+          { Id: "b".repeat(64), Labels: {} },
+        ]));
+      } else {
+        assert.equal(request.url.split("?")[0], `/containers/${id}/json`);
+        response.end(JSON.stringify({
+          State: { StartedAt: "2026-11-02T10:00:00Z", FinishedAt: "2026-11-02T09:00:00Z" },
+          Config: { Env: ["SECRET=private"] },
+        }));
+      }
+    }, async url => {
+      const response = await fetch(`${url}/containers/json`);
+      assert.equal(response.status, 200);
+      const containers = await response.json();
+      assert.deepEqual(containers[0], {
+        Id: id, Labels: { "sablier.enable": "true" },
+        StartedAt: "2026-11-02T10:00:00Z", FinishedAt: "2026-11-02T09:00:00Z",
+      });
+      assert.deepEqual(containers[1], { Id: "b".repeat(64), Labels: {} });
+      assert.equal(paths.length, 2);
+    });
+  });
+
+  test("logs inspection failures rather than returning incomplete timing data", async t => {
+    const log = t.mock.method(console, "error", () => {});
+    await withProxy(t, (request, response) => {
+      if (request.url.split("?")[0] === "/containers/json") {
+        response.end(JSON.stringify([{ Id: "a".repeat(64), Labels: { "sablier.enable": "true" } }]));
+      } else response.writeHead(404).end("{}");
+    }, async url => {
+      assert.equal((await fetch(`${url}/containers/json`)).status, 503);
+      assert.equal(log.mock.callCount(), 1);
+    });
+  });
+
+  test("caps timing inspections before inspecting any container", async t => {
+    t.mock.method(console, "error", () => {});
+    let calls = 0;
+    await withProxy(t, (_request, response) => {
+      calls++;
+      response.end(JSON.stringify(Array.from({ length: 129 }, () => ({
+        Id: "a".repeat(64), Labels: { "sablier.enable": "true" },
+      }))));
+    }, async url => {
+      assert.equal((await fetch(`${url}/containers/json`)).status, 503);
+      assert.equal(calls, 1);
+    });
+  });
 
 test("preserves Docker error statuses", async t => {
   await withProxy(t, (_request, response) => {
