@@ -2,6 +2,13 @@ services:
   sablier:
     image: sablierapp/sablier:1.19.1
     restart: unless-stopped
+    environment:
+      NO_COLOR: "1"
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
     healthcheck:
       test: ["CMD", "/bin/sablier", "health", "--url", "http://127.0.0.1:10000/health"]
       interval: 30s
@@ -22,6 +29,7 @@ services:
           - sablier-idle-website
     labels:
       - traefik.enable=false
+      - sablier.diagnostics=true
 
   status:
     build:

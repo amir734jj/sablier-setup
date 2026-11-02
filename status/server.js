@@ -81,7 +81,11 @@ export async function readStatus(fetchDocker = fetch) {
     all: "true",
     filters: JSON.stringify({ label: ["sablier.enable=true"] }),
   });
-  const response = await fetchDocker(`http://docker-status-proxy:2375/containers/json?${query}`, {
+  return summarize(await readProxy(`/containers/json?${query}`, fetchDocker));
+}
+
+async function readProxy(path, fetchDocker) {
+  const response = await fetchDocker(`http://docker-status-proxy:2375${path}`, {
     cache: "no-store",
     signal: AbortSignal.timeout(3000),
   });
@@ -93,23 +97,41 @@ export async function readStatus(fetchDocker = fetch) {
     if (size > 2_000_000) throw new Error("Docker status response exceeds size limit");
     chunks.push(chunk);
   }
-  let containers;
   try {
-    containers = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
     throw new Error("Docker status API returned invalid JSON");
   }
-  return summarize(containers);
+}
+
+export async function readEvents(fetchDocker = fetch) {
+  const data = await readProxy("/events", fetchDocker);
+  if (!data || !Array.isArray(data.events) || data.events.length > 100 ||
+      !Array.isArray(data.diagnostics) || data.diagnostics.length > 100 ||
+      typeof data.limited !== "boolean" || !Number.isSafeInteger(data.ignored_records) || data.ignored_records < 0) {
+    throw new Error("Invalid Sablier diagnostics response");
+  }
+  parseTime(data.checked_at);
+  for (const event of [...data.events, ...data.diagnostics]) {
+    if (!event || !(event.group === null || typeof event.group === "string") ||
+        typeof event.type !== "string" || !["info", "warning", "error"].includes(event.severity) ||
+        typeof event.explanation !== "string") throw new Error("Invalid Sablier diagnostic event");
+  }
+  for (const event of data.events) parseTime(event.timestamp);
+  for (const item of data.diagnostics) {
+    if (!Number.isSafeInteger(item.count) || item.count < 1) throw new Error("Invalid Sablier diagnostic count");
+  }
+  return data;
 }
 
 function sendError(request, response, code, message) {
   response.status(code);
-  if (request.path === "/health") return response.json({ error: message });
+  if (["/health", "/events"].includes(request.path)) return response.json({ error: message });
   return response.render("status", { status: null, message });
 }
 
-export function createApp(loadStatus = readStatus) {
+export function createApp(loadStatus = readStatus, loadEvents = readEvents) {
   const app = express();
   app.disable("x-powered-by");
   app.disable("etag");
@@ -132,6 +154,16 @@ export function createApp(loadStatus = readStatus) {
     next();
   });
   let active = 0;
+  app.get("/events", async (request, response) => {
+    if (active >= 8) return sendError(request, response, 503, "Sablier diagnostics are busy");
+    active++;
+    try {
+      response.json(await loadEvents());
+    } finally {
+      active--;
+    }
+  });
+  app.all("/events", (request, response) => sendError(request, response, 405, "Read-only endpoint"));
   const paths = ["/", "/status", "/health"];
   app.get(paths, async (request, response) => {
     if (active >= 8) return sendError(request, response, 503, "Container status is busy");
@@ -147,8 +179,9 @@ export function createApp(loadStatus = readStatus) {
   app.all(paths, (request, response) => sendError(request, response, 405, "Read-only endpoint"));
   app.use((request, response) => sendError(request, response, 404, "Not found"));
   app.use((error, request, response, _next) => {
-    console.error("Unable to read Docker container status:", error.message);
-    sendError(request, response, 503, "Container status is temporarily unavailable");
+    const eventsRequest = request.path === "/events";
+    console.error(eventsRequest ? "Unable to read Sablier diagnostics:" : "Unable to read Docker container status:", error.message);
+    sendError(request, response, 503, eventsRequest ? "Sablier diagnostics are temporarily unavailable" : "Container status is temporarily unavailable");
   });
   return app;
 }

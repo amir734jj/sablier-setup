@@ -74,9 +74,68 @@ html(lang="en")
           a.btn.btn-outline-primary(href="") Refresh status
         footer.mt-4.text-body-secondary= status.note
         p.small.text-body-secondary Times show the most recent start and stop in each group, not last traffic. They reset when containers are replaced. A running container's last stop may belong to its previous run.
+      section.mt-5(aria-labelledby="events-heading")
+        h2#events-heading Sablier events
+        p.small.text-body-secondary Recent recognized Sablier events for currently deployed, enabled containers. Only public group names and fixed explanations are shown, never raw logs or container identifiers.
+        p#events-state(role="status" aria-live="polite") Loading diagnostics...
+        ul#diagnostics.list-group.mb-3
+        .table-responsive
+          table.table.table-striped.align-middle.status-table
+            thead
+              tr
+                th(scope="col") Time (UTC)
+                th(scope="col") Group
+                th(scope="col") Event
+                th(scope="col") Explanation
+            tbody#events
+        noscript
+          p.alert.alert-info Enable JavaScript to load live Sablier diagnostics.
       p.small.text-body-secondary Automatically refreshes every 30 seconds.
+      p.small.text-body-secondary Events refresh every 5 seconds; up to 100 events from the past hour are shown. History is bounded by the latest 1,000 daemon log records and Docker log rotation, and may be incomplete.
     script.
       window.setTimeout(() => window.location.reload(), 30_000);
       window.addEventListener("pageshow", event => {
         if (event.persisted) window.location.reload();
       });
+      async function refreshEvents() {
+        const state = document.getElementById("events-state");
+        try {
+          const response = await fetch("/events", { cache: "no-store", signal: AbortSignal.timeout(4500) });
+          if (!response.ok) throw new Error("Diagnostics request failed");
+          const data = await response.json();
+          const rows = data.events.map(event => {
+            const row = document.createElement("tr");
+            const values = {
+              "Time (UTC)": new Date(event.timestamp).toISOString().replace("T", " ").replace("Z", " UTC"),
+              "Group": event.group ?? "Sablier",
+              "Event": event.type.replaceAll("_", " "),
+              "Explanation": event.explanation,
+            };
+            for (const [label, value] of Object.entries(values)) {
+              const cell = document.createElement("td");
+              cell.dataset.label = label;
+              cell.className = "text-break";
+              cell.textContent = value;
+              row.append(cell);
+            }
+            return row;
+          });
+          const diagnostics = data.diagnostics.map(item => {
+            const entry = document.createElement("li");
+            entry.className = `list-group-item ${item.severity === "error" ? "list-group-item-danger" : "list-group-item-warning"}`;
+            entry.textContent = `${item.group ?? "Sablier"}: ${item.explanation} (${item.count} recent event${item.count === 1 ? "" : "s"})`;
+            return entry;
+          });
+          document.getElementById("events").replaceChildren(...rows);
+          document.getElementById("diagnostics").replaceChildren(...diagnostics);
+          state.className = "small text-body-secondary";
+          state.textContent = `${rows.length ? "Events checked" : "No recognized events in the available log window; checked"} at ${new Date(data.checked_at).toISOString()}. Summaries describe recent history, not current failures.${data.limited ? " History limit reached." : ""}${data.ignored_records ? ` ${data.ignored_records} unrecognized or unrelated records omitted.` : ""}`;
+        } catch (error) {
+          console.error("Unable to refresh Sablier diagnostics:", error);
+          state.className = "alert alert-danger";
+          state.textContent = "Sablier diagnostics are temporarily unavailable. Any events below are stale; container status is independent. Retrying in 5 seconds.";
+        } finally {
+          window.setTimeout(refreshEvents, 5_000);
+        }
+      }
+      refreshEvents();

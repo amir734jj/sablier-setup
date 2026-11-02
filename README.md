@@ -55,6 +55,54 @@ caching for this hostname; rules that override origin headers are outside the ap
 Docker errors return HTTP 503 and are logged instead of returning an
 empty, apparently healthy list.
 
+### Public Sablier diagnostics
+
+The page also polls `/events` every 5 seconds for a sanitized Sablier event
+timeline and rule-based summaries. Container status still refreshes every
+30 seconds. Diagnostics are independent: an unavailable log source returns
+HTTP 503 from `/events` and shows an explicit error without hiding container
+status. Previously displayed events are marked stale until a read succeeds.
+Summaries describe recent history, not proof of an ongoing failure.
+
+The proxy reads **only the Sablier daemon's logs**, never application logs.
+It resolves exactly one container labelled `sablier.diagnostics=true`, set on
+the daemon in Compose. Do not apply this label to application containers or
+run multiple labelled daemons on the same host. Compose sets `NO_COLOR=1`
+for predictable parsing of Sablier 1.19.1's console output and uses Docker's
+`json-file` logging driver with rotation at 5 MB and two files. Do not enable
+a TTY on the daemon. Redeploy this stack to apply the label, environment,
+logging configuration, and updated proxy image.
+
+The public response includes only event timestamps, existing public group
+names, fixed event types, severity, and fixed diagnostic explanations. Raw
+messages, error strings, container names/IDs, URLs, credentials, and application
+stdout/stderr are never forwarded. Group names are already public via the
+status page; do not put secrets in group labels.
+
+Recognized events include group discovery/registry refresh, unregistered stops,
+start requests, readiness, idle expiration, and known start/stop/discovery
+failures. An `unregistered` event means an enabled container had no
+Sablier-managed session, not that it was missing from Docker. Expiration means
+Sablier requested a stop, not that Docker confirmed it succeeded.
+
+Each read examines at most the latest 1,000 daemon log records from the past
+hour and returns at most 100 recognized events, newest first. Historical
+events are mapped using currently deployed, enabled containers and their
+current group labels; events for removed/replaced containers are omitted.
+Registry/provider events are displayed under `Sablier` instead of a group.
+Unknown messages/formats are omitted and counted, never published as raw text.
+The response flags when a history limit is reached. Empty results mean no
+recognized events in the available window, not a clean bill of health.
+History comes from Docker logs, is not persisted by the webserver, can be
+shortened by rotation, and resets when the daemon container is replaced.
+
+Log discovery and reads share a 3-second deadline, 2 MB per upstream response,
+and the proxy's eight-request concurrency limit. Event mapping is limited to
+128 enabled containers and group labels of at most 256 characters.
+Log-source, framing, size, and Docker errors are logged privately and return
+a generic public HTTP 503. `/health` remains a container-status check and
+does not depend on diagnostic log availability.
+
 ## Set up Sablier in Coolify
 
 ### 1. Prerequisites
@@ -263,8 +311,12 @@ Both Docker images use
 `node:lts-alpine`. The webserver runs
 unprivileged with a read-only filesystem, and has no Docker socket mount.
 The internal [Node.js proxy](./proxy/server.mjs) uses Dockerode's streaming
-transport to access the Docker socket. It allows only `GET /containers/json`, including
-query parameters; other Docker API paths and mutation methods are denied.
+transport to access the Docker socket. Its HTTP allowlist permits only
+`GET /containers/json` (including query parameters) and the fixed `GET /events`
+diagnostics route. The latter resolves the labelled daemon and reads its logs
+internally through [proxy/events.mjs](./proxy/events.mjs); callers cannot select
+a container, supply log query parameters, or access a raw Docker logs endpoint.
+Other Docker API paths and mutation methods are denied.
 It limits concurrent Docker reads to eight, responses to 2 MB, and upstream
 requests to three seconds. Upstream connection errors are logged and return 503.
 Lifecycle inspections run sequentially within that same request deadline.

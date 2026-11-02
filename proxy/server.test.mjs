@@ -6,6 +6,143 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createProxy } from "./server.mjs";
+import { sanitizeEvents } from "./events.mjs";
+
+function logFrame(text, stream = 2) {
+  const body = Buffer.from(text);
+  const header = Buffer.alloc(8);
+  header[0] = stream;
+  header.writeUInt32BE(body.length, 4);
+  return Buffer.concat([header, body]);
+}
+
+const eventNow = Date.parse("2026-11-02T16:00:00Z");
+const eventContainers = [{
+  Id: "b".repeat(64), Names: ["/private-container-name"],
+  Labels: { "sablier.enable": "true", "sablier.group": "public-group" },
+}];
+
+test("publishes only allowlisted event fields, never raw messages or container names", () => {
+  const body = logFrame([
+    '2026-11-02T15:40:00.123456789Z 3:40PM INF sablier/autostop.go:54 stopped unregistered instance instance=private-container-name reason="SECRET=private"',
+    '2026-11-02T15:41:00Z 3:41PM ERR sablier/instance_request.go:190 async instance start failed instance=private-container-name error="password=private"',
+    '2026-11-02T15:42:00Z 3:42PM INF sablier/instance_request.go:195 instance is ready instance=private-container-name',
+    '2026-11-02T15:43:00Z 3:43PM ERR sablier/instance_request.go:190 async instance start failed instance=unmanaged error="SECRET"',
+    '2026-11-02T15:44:00Z 3:44PM INF sablier/unknown.go:1 arbitrary private message token=SECRET',
+    '2026-11-02T15:45:00Z 3:45PM INF sablier/sablier.go:158 set groups new="map[private-name:[private-id]]"',
+    "",
+  ].join("\n"));
+  const data = sanitizeEvents(body, eventContainers, eventNow);
+  assert.deepEqual(data.events.map(event => [event.type, event.group]), [
+    ["groups_refreshed", null], ["ready", "public-group"],
+    ["start_failed", "public-group"], ["unregistered", "public-group"],
+  ]);
+  assert.equal(data.events[3].timestamp, "2026-11-02T15:40:00.123Z");
+  assert.equal(data.ignored_records, 2);
+  assert.equal(data.diagnostics.length, 2);
+  assert.deepEqual(Object.keys(data.events[0]), ["timestamp", "group", "type", "severity", "explanation"]);
+  assert.doesNotMatch(JSON.stringify(data), /private-container-name|private-name|private-id|SECRET|password|token|instance=|\.go:/);
+});
+
+test("enforces the one-hour and 100-event limits and aggregates diagnostic counts", () => {
+  const records = Array.from({ length: 110 }, (_, index) =>
+    `2026-11-02T15:${String(index % 60).padStart(2, "0")}:00Z 3:00PM INF sablier/autostop.go:54 stopped unregistered instance instance=private-container-name\n`);
+  records.push(
+    "2026-11-02T14:59:59Z 2:59PM INF sablier/instance_request.go:195 instance is ready instance=private-container-name\n",
+    "2026-11-02T16:00:01Z 4:00PM INF sablier/instance_request.go:195 instance is ready instance=private-container-name\n",
+  );
+  const data = sanitizeEvents(logFrame(records.join("")), eventContainers, eventNow);
+  assert.equal(data.events.length, 100);
+  assert.equal(data.limited, true);
+  assert.equal(data.diagnostics[0].count, 100);
+  assert.ok(data.events.every(event => event.type === "unregistered"));
+  assert.ok(data.events.every((event, index) => !index || event.timestamp <= data.events[index - 1].timestamp));
+});
+
+test("handles split Docker frames, stream separation, empty logs, and invalid formats safely", () => {
+  const line = "2026-11-02T15:40:00Z 3:40PM INF sablier/instance_request.go:195 instance is ready instance=private-container-name\n";
+  const body = Buffer.concat([logFrame(line.slice(0, 20)), logFrame("unrelated stdout\n", 1), logFrame(line.slice(20))]);
+  const data = sanitizeEvents(body, eventContainers, eventNow);
+  assert.equal(data.events.length, 1);
+  assert.equal(data.ignored_records, 1);
+  assert.deepEqual(sanitizeEvents(Buffer.alloc(0), eventContainers, eventNow).events, []);
+  assert.equal(sanitizeEvents(logFrame("unsupported SECRET format\n"), eventContainers, eventNow).ignored_records, 1);
+  for (const invalid of [Buffer.from("raw tty logs"), logFrame(line).subarray(0, 15), Buffer.alloc(7)]) {
+    assert.throws(() => sanitizeEvents(invalid, eventContainers, eventNow), /Docker log/);
+  }
+});
+
+test("covers recognized Sablier transitions without claiming expiration confirms a stop", () => {
+  const messages = [
+    ["instance added to group", "enabled"],
+    ["instance removed from group", "removed"],
+    ["request to start instance dispatched", "starting"],
+    ["instance expired", "expired"],
+    ["instance expired could not be stopped from provider", "stop_failed"],
+    ["instance expired could not be inspected before stop", "inspection_failed"],
+    ["instance expired but is not managed by sablier, skipping stop", "stop_skipped"],
+  ];
+  const data = sanitizeEvents(logFrame(messages.map(([message]) =>
+    `2026-11-02T15:40:00Z 3:40PM INF sablier/instance_request.go:1 ${message} instance=private-container-name group=SECRET error=SECRET\n`).join("")), eventContainers, eventNow);
+  assert.deepEqual(data.events.map(event => event.type), messages.map(([, type]) => type));
+  assert.match(data.events.find(event => event.type === "expired").explanation, /does not confirm/);
+  assert.doesNotMatch(JSON.stringify(data), /SECRET/);
+});
+
+test("reads only the designated daemon logs and denies arbitrary log access", async t => {
+  const daemon = "a".repeat(64);
+  const paths = [];
+  await withProxy(t, (incoming, response) => {
+    const url = new URL(incoming.url, "http://docker");
+    paths.push(url.pathname);
+    if (url.pathname === "/containers/json") {
+      assert.equal(url.searchParams.get("all"), "true");
+      response.end(JSON.stringify([
+        { Id: daemon, Labels: { "sablier.diagnostics": "true" } },
+        ...eventContainers,
+      ]));
+    } else {
+      assert.equal(url.pathname, `/containers/${daemon}/logs`);
+      assert.equal(url.searchParams.get("tail"), "1000");
+      assert.equal(url.searchParams.get("timestamps"), "true");
+      assert.equal(url.searchParams.get("stdout"), "true");
+      assert.equal(url.searchParams.get("stderr"), "true");
+      assert.ok(Math.abs(Number(url.searchParams.get("since")) * 1000 - (Date.now() - 3_600_000)) < 5000);
+      assert.equal(url.searchParams.has("follow"), false);
+      response.end(logFrame(`${new Date(Date.now() - 1000).toISOString()} 3:40PM INF sablier/instance_request.go:195 instance is ready instance=private-container-name error=SECRET\n`));
+    }
+  }, async url => {
+    const response = await fetch(`${url}/events`, { headers: { Authorization: "SECRET" } });
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("cache-control"), /no-store/);
+    const data = await response.json();
+    assert.equal(data.events[0].group, "public-group");
+    assert.doesNotMatch(JSON.stringify(data), /SECRET|private-container-name/);
+    for (const path of [`/containers/${daemon}/logs`, "/events?tail=all", "/events/", "/events?container=private"]) {
+      assert.equal((await fetch(url + path)).status, 403);
+    }
+    assert.equal((await fetch(`${url}/events`, { method: "POST" })).status, 403);
+    assert.deepEqual(paths, ["/containers/json", `/containers/${daemon}/logs`]);
+  });
+});
+
+test("fails explicitly for missing or ambiguous daemon sources and Docker log errors", async t => {
+  const log = t.mock.method(console, "error", () => {});
+  for (const mode of ["missing", "ambiguous", "invalid-id", "log-error", "bad-frame"]) {
+    await withProxy(t, (incoming, response) => {
+      if (new URL(incoming.url, "http://docker").pathname === "/containers/json") {
+        const daemon = { Id: mode === "invalid-id" ? "../private" : "a".repeat(64), Labels: { "sablier.diagnostics": "true" } };
+        response.end(JSON.stringify(mode === "missing" ? [] : mode === "ambiguous" ? [daemon, daemon] : [daemon]));
+      } else if (mode === "log-error") response.writeHead(500).end('{"error":"SECRET"}');
+      else response.end("raw tty SECRET");
+    }, async url => {
+      const response = await fetch(`${url}/events`);
+      assert.equal(response.status, 503, mode);
+      assert.deepEqual(await response.json(), { error: "Sablier diagnostics are temporarily unavailable" });
+    });
+  }
+  assert.equal(log.mock.callCount(), 5);
+});
 
 async function withProxy(t, handler, run, options = {}) {
   const id = `sablier-${randomUUID()}`;
