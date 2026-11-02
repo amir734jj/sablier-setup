@@ -267,6 +267,7 @@ transport to access the Docker socket. It allows only `GET /containers/json`, in
 query parameters; other Docker API paths and mutation methods are denied.
 It limits concurrent Docker reads to eight, responses to 2 MB, and upstream
 requests to three seconds. Upstream connection errors are logged and return 503.
+Lifecycle inspections run sequentially within that same request deadline.
 It runs as root to access the Docker socket, on the private `status-backend`
 network only. Its port is not published. A read-only Docker
 socket mount alone does not restrict Docker API operations; the HTTP allowlist

@@ -7,26 +7,26 @@ import { pathToFileURL } from "node:url";
 const statusCodes = Object.fromEntries(Array.from({ length: 400 }, (_, index) => [index + 200, true]));
 
 async function readDocker(path, docker, signal) {
+  const url = new URL(path, "http://docker");
   const response = await new Promise((resolve, reject) => {
     // Stream through Dockerode's transport so the size limit applies before buffering.
     docker.modem.dial({
-      path: path.split("?")[0] + "?",
+      path: `${url.pathname}?`,
       method: "GET",
       headers: { "Cache-Control": "no-cache", "Pragma": "no-cache" },
-      options: { _query: parse(path.split("?").slice(1).join("?")) },
+      options: { _query: parse(url.search.slice(1)) },
       isStream: true,
       abortSignal: signal,
       statusCodes,
     }, (error, stream) => error ? reject(error) : resolve(stream));
   });
   addAbortSignal(signal, response);
-  const chunks = [];
   let size = 0;
-  for await (const chunk of response) {
+  const chunks = await Array.fromAsync(response, chunk => {
     size += chunk.length;
     if (size > 2_000_000) throw new Error("Docker status response exceeds size limit");
-    chunks.push(chunk);
-  }
+    return chunk;
+  });
   return { status: response.statusCode, body: Buffer.concat(chunks) };
 }
 
@@ -43,7 +43,7 @@ export function createProxy({ socketPath = "/var/run/docker.sock", timeoutMs = 3
     outgoing.setHeader("Expires", "0");
     outgoing.setHeader("Surrogate-Control", "no-store");
     outgoing.setHeader("Content-Type", "application/json");
-    if (incoming.method !== "GET" || incoming.url.split("?")[0] !== "/containers/json") {
+    if (incoming.method !== "GET" || !/^\/containers\/json(?:\?|$)/.test(incoming.url)) {
       outgoing.writeHead(403).end(JSON.stringify({ error: "Docker API request denied" }));
       return;
     }
@@ -63,7 +63,7 @@ export function createProxy({ socketPath = "/var/run/docker.sock", timeoutMs = 3
       if (!Array.isArray(containers)) throw new Error("Docker did not return a container list");
       const enabled = containers.filter(container => container.Labels?.["sablier.enable"] === "true");
       if (enabled.length > 128) throw new Error("Container timing inspection limit exceeded");
-      for (const container of enabled) {
+      await Array.fromAsync(enabled, async container => {
         if (!/^[a-f0-9]{64}$/.test(container.Id)) throw new Error("Invalid Docker container identifier");
         const detail = await readDocker(`/containers/${container.Id}/json`, docker, signal);
         if (detail.status !== 200) throw new Error(`Docker inspection returned HTTP ${detail.status}`);
@@ -73,7 +73,7 @@ export function createProxy({ socketPath = "/var/run/docker.sock", timeoutMs = 3
         }
         container.StartedAt = state.StartedAt;
         container.FinishedAt = state.FinishedAt;
-      }
+      });
       const result = enabled.length ? Buffer.from(JSON.stringify(containers)) : body;
       if (result.length > 2_000_000) throw new Error("Docker status response exceeds size limit");
       outgoing.writeHead(status).end(result);

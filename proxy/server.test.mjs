@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { createServer } from "node:http";
+import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -53,6 +53,73 @@ test("forwards allowed queries over the Docker socket without client headers", a
   });
 });
 
+test("parses repeated query parameters and question marks with URL", async t => {
+  await withProxy(t, (incoming, response) => {
+    const url = new URL(incoming.url, "http://docker");
+    assert.equal(url.pathname, "/containers/json");
+    assert.deepEqual(url.searchParams.getAll("label"), ["first", "second"]);
+    assert.equal(url.searchParams.get("value"), "one?two");
+    assert.equal(url.searchParams.get("encoded"), "?");
+    assert.equal(url.searchParams.get("empty"), "");
+    response.end("[]");
+  }, async url => {
+    const response = await fetch(`${url}/containers/json?label=first&label=second&value=one?two&encoded=%3F&empty=`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), []);
+  });
+});
+
+test("denies raw path aliases before URL normalization", async t => {
+  let calls = 0;
+  await withProxy(t, (_incoming, response) => { calls++; response.end("[]"); }, async url => {
+    const paths = [
+      "/ignored/../containers/json",
+      "/ignored/%2e%2e/containers/json",
+      "//docker/containers/json",
+      "/containers\\json",
+      "/containers/json#fragment",
+    ];
+    const statuses = await Promise.all(paths.map(path => new Promise((resolve, reject) => {
+      const incoming = request(url, { path }, response => {
+        response.resume();
+        response.on("end", () => resolve(response.statusCode));
+      });
+      incoming.on("error", reject);
+      incoming.end();
+    })));
+    assert.deepEqual(statuses, paths.map(() => 403));
+    assert.equal(calls, 0);
+  });
+});
+
+test("inspects containers sequentially and preserves list order", async t => {
+  const ids = ["a", "b", "c"].map(character => character.repeat(64));
+  const inspected = [];
+  let active = 0;
+  let peak = 0;
+  await withProxy(t, (incoming, response) => {
+    const { pathname } = new URL(incoming.url, "http://docker");
+    if (pathname === "/containers/json") {
+      response.end(JSON.stringify(ids.map(Id => ({ Id, Labels: { "sablier.enable": "true" } }))));
+      return;
+    }
+    inspected.push(pathname);
+    peak = Math.max(peak, ++active);
+    setTimeout(() => {
+      active--;
+      response.end(JSON.stringify({
+        State: { StartedAt: "2026-11-02T10:00:00Z", FinishedAt: "0001-01-01T00:00:00Z" },
+      }));
+    }, 10);
+  }, async url => {
+    const response = await fetch(`${url}/containers/json`);
+    assert.equal(response.status, 200);
+    assert.deepEqual((await response.json()).map(container => container.Id), ids);
+    assert.deepEqual(inspected, ids.map(id => `/containers/${id}/json`));
+    assert.equal(peak, 1);
+  });
+});
+
 test("reads Docker again on every request and ignores conditional client headers", async t => {
   let calls = 0;
   await withProxy(t, (request, response) => {
@@ -90,13 +157,13 @@ test("denies other methods and paths without contacting Docker", async t => {
     const paths = [];
     await withProxy(t, (request, response) => {
       paths.push(request.url);
-      if (request.url.split("?")[0] === "/containers/json") {
+      if (new URL(request.url, "http://docker").pathname === "/containers/json") {
         response.end(JSON.stringify([
           { Id: id, Labels: { "sablier.enable": "true" } },
           { Id: "b".repeat(64), Labels: {} },
         ]));
       } else {
-        assert.equal(request.url.split("?")[0], `/containers/${id}/json`);
+        assert.equal(new URL(request.url, "http://docker").pathname, `/containers/${id}/json`);
         response.end(JSON.stringify({
           State: { StartedAt: "2026-11-02T10:00:00Z", FinishedAt: "2026-11-02T09:00:00Z" },
           Config: { Env: ["SECRET=private"] },
@@ -118,7 +185,7 @@ test("denies other methods and paths without contacting Docker", async t => {
   test("logs inspection failures rather than returning incomplete timing data", async t => {
     const log = t.mock.method(console, "error", () => {});
     await withProxy(t, (request, response) => {
-      if (request.url.split("?")[0] === "/containers/json") {
+      if (new URL(request.url, "http://docker").pathname === "/containers/json") {
         response.end(JSON.stringify([{ Id: "a".repeat(64), Labels: { "sablier.enable": "true" } }]));
       } else response.writeHead(404).end("{}");
     }, async url => {
