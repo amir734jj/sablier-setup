@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import test from "node:test";
 import { DateTime } from "luxon";
-import { createApp, formatTime, relativeTime, summarize } from "./server.js";
+import { createApp, formatTime, readStatus, relativeTime, summarize } from "./server.js";
 
 const container = (state, started, stopped) => ({
   Labels: { "sablier.enable": "true", "sablier.group": "example" },
@@ -65,5 +65,50 @@ test("renders lifecycle columns and keeps JSON health timing fields", async t =>
   assert.match(html, /Last stopped/);
   assert.match(html, /Not available/);
   assert.match(html, /datetime="2026-11-02T10:00:00.000Z"/);
+  assert.match(html, /title="2026-11-02 10:00:00.000 UTC"/);
+  assert.doesNotMatch(html.replace(/<[^>]*>/g, ""), /2026-11-02 10:00:00.000 UTC/);
+  assert.match(html, /window\.setTimeout\(\(\) => window\.location\.reload\(\), 30_000\)/);
+  assert.match(html, /if \(event\.persisted\) window\.location\.reload\(\)/);
+  assert.match(html, /href="https:\/\/cdn\.jsdelivr\.net\/npm\/bootstrap@5\.3\.8\/dist\/css\/bootstrap\.min\.css"/);
   assert.deepEqual(await (await fetch(`${url}/health`)).json(), data);
+});
+
+test("disables caching for pages, health, and error responses", async t => {
+  let calls = 0;
+  const app = createApp(async () => { calls++; return summarize([]); });
+  assert.equal(app.enabled("etag"), false);
+  assert.equal(app.enabled("view cache"), false);
+  const server = app.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => new Promise(resolve => {
+    server.close(resolve);
+    server.closeAllConnections();
+  }));
+  const url = `http://127.0.0.1:${server.address().port}`;
+  for (const [path, status] of [["/", 200], ["/status", 200], ["/health", 200], ["/missing", 404], ["/health", 200]]) {
+    const response = await fetch(url + path, {
+      headers: { "If-None-Match": "*", "If-Modified-Since": "Mon, 02 Nov 2026 12:00:00 GMT" },
+    });
+    assert.equal(response.status, status);
+    assert.equal(response.headers.get("cache-control"), "no-store, no-cache, max-age=0, must-revalidate");
+    assert.equal(response.headers.get("pragma"), "no-cache");
+    assert.equal(response.headers.get("expires"), "0");
+    assert.equal(response.headers.get("surrogate-control"), "no-store");
+    assert.equal(response.headers.get("etag"), null);
+    assert.equal(response.headers.get("last-modified"), null);
+    await response.arrayBuffer();
+  }
+  assert.equal(calls, 4);
+});
+
+test("requests uncached Docker status on every read", async () => {
+  let calls = 0;
+  const fetchDocker = async (_url, options) => {
+    calls++;
+    assert.equal(options.cache, "no-store");
+    return new Response("[]");
+  };
+  await readStatus(fetchDocker);
+  await readStatus(fetchDocker);
+  assert.equal(calls, 2);
 });

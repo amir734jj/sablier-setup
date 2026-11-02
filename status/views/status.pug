@@ -13,7 +13,7 @@ html(lang="en")
       else
         p.text-body-secondary
           | Last checked: 
-          time(datetime=status.checked_at)= formatTime(status.checked_at)
+          time(datetime=status.checked_at title=formatTime(status.checked_at))= relativeTime(status.checked_at, status.checked_at)
         if status.groups.length
           .table-responsive
             table.table.table-striped.align-middle
@@ -34,8 +34,7 @@ html(lang="en")
                     each field in ["last_started_at", "last_stopped_at"]
                       td
                         if group[field]
-                          time(datetime=group[field] title=group[field])= relativeTime(group[field], status.checked_at)
-                          small.d-block.text-body-secondary= formatTime(group[field])
+                          time(datetime=group[field] title=formatTime(group[field]))= relativeTime(group[field], status.checked_at)
                         else
                           span.text-body-secondary Not available
         else
@@ -44,3 +43,9 @@ html(lang="en")
           a.btn.btn-outline-primary(href="") Refresh status
         footer.mt-4.text-body-secondary= status.note
         p.small.text-body-secondary Times show the most recent start and stop in each group, not last traffic. They reset when containers are replaced. A running container's last stop may belong to its previous run.
+      p.small.text-body-secondary Automatically refreshes every 30 seconds.
+    script.
+      window.setTimeout(() => window.location.reload(), 30_000);
+      window.addEventListener("pageshow", event => {
+        if (event.persisted) window.location.reload();
+      });

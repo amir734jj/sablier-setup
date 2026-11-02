@@ -8,17 +8,17 @@ Coolify. The Compose file preserves Sablier's 10-minute idle sessions and its
 
 After deployment, https://sablier.hesamian.com/ returns a server-rendered HTML
 status page rendered with [Pug](./status/views/status.pug).
-It uses Bootstrap 5.3.8 CSS from jsDelivr: running groups have green success
-badges; all other statuses have red danger badges. Styling requires CDN access.
+It uses cacheable Bootstrap 5.3.8 CSS from jsDelivr: running groups have green
+success badges; all other statuses have red danger badges. Styling requires CDN access.
 `/status` returns the same page; `/health` returns JSON and also
-checks access to Docker. The page refreshes only when requested, not automatically,
-so an open browser tab does not keep the service awake.
+checks access to Docker. JavaScript reloads the page every 30 seconds, including
+error pages. An open tab keeps the status service awake; close it to allow idle sleep.
 
 Only containers labelled `sablier.enable=true` are included, grouped by
 `sablier.group`. The response contains a UTC timestamp, group names, aggregate
 status, and counts of actual Docker states.
 The page also shows the most recent Docker start and stop timestamps in each
-group, with relative ages and exact UTC times. These are lifecycle times, not
+group, with relative ages and exact UTC times available on hover. These are lifecycle times, not
 last-request activity. A running container's last stop can refer to its previous
 run; timestamps reset when a deployment replaces the container.
 
@@ -45,7 +45,14 @@ view it; use an SSH container check to observe its sleeping state.
 
 This endpoint is intentionally public. It does not expose container identifiers,
 commands, environments, credentials, or start/stop controls. Responses are not
-cached. Docker errors return HTTP 503 and are logged instead of returning an
+cached. HTML, health responses, and all proxy responses send
+`Cache-Control: no-store, no-cache, max-age=0, must-revalidate`, with legacy and
+shared-cache directives. Dynamic-response ETags and Pug view caching are disabled.
+Each status read queries Docker again; no container data is cached.
+The static Bootstrap stylesheet is separate and may be cached by the CDN and browser.
+Configure any external CDN or reverse-proxy rules to honor these headers or bypass
+caching for this hostname; rules that override origin headers are outside the app's control.
+Docker errors return HTTP 503 and are logged instead of returning an
 empty, apparently healthy list.
 
 ## Set up Sablier in Coolify
@@ -270,11 +277,12 @@ supplies that restriction.
 Both Node.js services use the public npm registry (`https://registry.npmjs.org/`)
 for dependencies, configured in each service's `.npmrc` and lockfile.
 
-With Node.js 24 or newer, install dependencies and run the proxy tests:
+With Node.js 24 or newer, install dependencies and run the status and proxy tests:
 
 ```sh
 npm ci --prefix status
 npm ci --prefix proxy
+node --test status/timing.test.js
 npm test --prefix proxy
 docker compose config --quiet
 ```

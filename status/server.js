@@ -82,6 +82,7 @@ export async function readStatus(fetchDocker = fetch) {
     filters: JSON.stringify({ label: ["sablier.enable=true"] }),
   });
   const response = await fetchDocker(`http://docker-status-proxy:2375/containers/json?${query}`, {
+    cache: "no-store",
     signal: AbortSignal.timeout(3000),
   });
   if (!response.ok) throw new Error(`Docker status API returned HTTP ${response.status}`);
@@ -111,13 +112,23 @@ function sendError(request, response, code, message) {
 export function createApp(loadStatus = readStatus) {
   const app = express();
   app.disable("x-powered-by");
+  app.disable("etag");
+  app.disable("view cache");
   app.set("json spaces", 2);
   app.set("view engine", "pug");
   app.set("views", fileURLToPath(new URL("./views/", import.meta.url)));
   app.locals.relativeTime = relativeTime;
   app.locals.formatTime = formatTime;
-  app.use((_request, response, next) => {
-    response.set({ "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
+  app.use((request, response, next) => {
+    delete request.headers["if-none-match"];
+    delete request.headers["if-modified-since"];
+    response.set({
+      "Cache-Control": "no-store, no-cache, max-age=0, must-revalidate",
+      "Pragma": "no-cache",
+      "Expires": "0",
+      "Surrogate-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+    });
     next();
   });
   let active = 0;

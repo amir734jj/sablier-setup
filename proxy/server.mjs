@@ -12,6 +12,7 @@ async function readDocker(path, docker, signal) {
     docker.modem.dial({
       path: path.split("?")[0] + "?",
       method: "GET",
+      headers: { "Cache-Control": "no-cache", "Pragma": "no-cache" },
       options: { _query: parse(path.split("?").slice(1).join("?")) },
       isStream: true,
       abortSignal: signal,
@@ -37,7 +38,10 @@ export function createProxy({ socketPath = "/var/run/docker.sock", timeoutMs = 3
     requestTimeout: 5000,
     connectionsCheckingInterval: 1000,
   }, async (incoming, outgoing) => {
-    outgoing.setHeader("Cache-Control", "no-store");
+    outgoing.setHeader("Cache-Control", "no-store, no-cache, max-age=0, must-revalidate");
+    outgoing.setHeader("Pragma", "no-cache");
+    outgoing.setHeader("Expires", "0");
+    outgoing.setHeader("Surrogate-Control", "no-store");
     outgoing.setHeader("Content-Type", "application/json");
     if (incoming.method !== "GET" || incoming.url.split("?")[0] !== "/containers/json") {
       outgoing.writeHead(403).end(JSON.stringify({ error: "Docker API request denied" }));

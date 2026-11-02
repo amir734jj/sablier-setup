@@ -33,15 +33,42 @@ test("forwards allowed queries over the Docker socket without client headers", a
     assert.equal(request.method, "GET");
     assert.equal(request.url, path);
     assert.equal(request.headers.authorization, undefined);
+    assert.equal(request.headers["cache-control"], "no-cache");
+    assert.equal(request.headers.pragma, "no-cache");
     response.setHeader("X-Private", "hidden");
+    response.setHeader("Cache-Control", "public, max-age=3600");
+    response.setHeader("ETag", '"docker-cached"');
     response.end("[]");
   }, async url => {
     const response = await fetch(url + path, { headers: { Authorization: "private" } });
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("content-type"), "application/json");
-    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.equal(response.headers.get("cache-control"), "no-store, no-cache, max-age=0, must-revalidate");
+    assert.equal(response.headers.get("pragma"), "no-cache");
+    assert.equal(response.headers.get("expires"), "0");
+    assert.equal(response.headers.get("surrogate-control"), "no-store");
+    assert.equal(response.headers.get("etag"), null);
     assert.equal(response.headers.get("x-private"), null);
     assert.equal(await response.text(), "[]");
+  });
+});
+
+test("reads Docker again on every request and ignores conditional client headers", async t => {
+  let calls = 0;
+  await withProxy(t, (request, response) => {
+    assert.equal(request.headers["if-none-match"], undefined);
+    assert.equal(request.headers["if-modified-since"], undefined);
+    response.end(JSON.stringify([{ State: ++calls === 1 ? "running" : "exited" }]));
+  }, async url => {
+    for (const state of ["running", "exited"]) {
+      const response = await fetch(`${url}/containers/json`, {
+        headers: { "If-None-Match": '"cached"', "If-Modified-Since": "Mon, 02 Nov 2026 12:00:00 GMT" },
+      });
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("cache-control"), "no-store, no-cache, max-age=0, must-revalidate");
+      assert.deepEqual(await response.json(), [{ State: state }]);
+    }
+    assert.equal(calls, 2);
   });
 });
 
