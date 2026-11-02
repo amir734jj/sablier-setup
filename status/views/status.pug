@@ -5,6 +5,37 @@ html(lang="en")
     meta(name="viewport" content="width=device-width, initial-scale=1")
     title Container status
     link(rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" integrity="sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB" crossorigin="anonymous")
+    style.
+      @media (max-width: 767.98px) {
+        .status-table thead {
+          position: absolute;
+          width: 1px;
+          height: 1px;
+          padding: 0;
+          margin: -1px;
+          overflow: hidden;
+          clip: rect(0, 0, 0, 0);
+          white-space: nowrap;
+          border: 0;
+        }
+        .status-table, .status-table tbody, .status-table tr, .status-table th, .status-table td {
+          display: block;
+          width: 100%;
+        }
+        .status-table tbody tr {
+          margin-bottom: 1rem;
+        }
+        .status-table tbody td {
+          display: grid;
+          grid-template-columns: minmax(0, 7rem) minmax(0, 1fr);
+          gap: .5rem;
+          overflow-wrap: anywhere;
+        }
+        .status-table tbody td::before {
+          content: attr(data-label);
+          font-weight: 600;
+        }
+      }
   body.bg-body-tertiary
     main.container.py-5
       h1.mb-3 Container status
@@ -16,7 +47,7 @@ html(lang="en")
           time(datetime=status.checked_at title=formatTime(status.checked_at))= relativeTime(status.checked_at, status.checked_at)
         if status.groups.length
           .table-responsive
-            table.table.table-striped.align-middle
+            table.table.table-striped.align-middle.status-table
               thead
                 tr
                   th(scope="col") Group
@@ -28,11 +59,11 @@ html(lang="en")
                 each group in status.groups
                   tr
                     th.text-break(scope="row")= group.group
-                    td
+                    td(data-label="Status")
                       span.badge(class=group.status === "running" ? "text-bg-success" : "text-bg-danger")= group.status.replaceAll("_", " ")
-                    td.text-break= Object.entries(group.states).map(([name, count]) => `${name}: ${count}`).join(", ")
-                    each field in ["last_started_at", "last_stopped_at"]
-                      td
+                    td.text-break(data-label="Container states")= Object.entries(group.states).map(([name, count]) => `${name}: ${count}`).join(", ")
+                    each field, label in { "Last started": "last_started_at", "Last stopped": "last_stopped_at" }
+                      td(data-label=label)
                         if group[field]
                           time(datetime=group[field] title=formatTime(group[field]))= relativeTime(group[field], status.checked_at)
                         else

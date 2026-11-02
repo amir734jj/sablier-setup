@@ -63,6 +63,10 @@ test("renders lifecycle columns and keeps JSON health timing fields", async t =>
   const html = await (await fetch(url)).text();
   assert.match(html, /Last started/);
   assert.match(html, /Last stopped/);
+  assert.match(html, /@media \(max-width: 767\.98px\)/);
+  for (const label of ["Status", "Container states", "Last started", "Last stopped"]) {
+    assert.match(html, new RegExp(`data-label="${label}"`));
+  }
   assert.match(html, /Not available/);
   assert.match(html, /datetime="2026-11-02T10:00:00.000Z"/);
   assert.match(html, /title="2026-11-02 10:00:00.000 UTC"/);
