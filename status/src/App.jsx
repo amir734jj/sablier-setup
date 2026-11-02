@@ -7,13 +7,13 @@ const TABS = [
   { id: "events", label: "Sablier events" },
 ];
 
-function Notice({ id, message, warning = false }) {
+function Notice({ id, message, warning = false, live = true }) {
   return (
     <p
       id={id}
       class={warning ? "alert alert-warning" : "small text-body-secondary"}
-      role="status"
-      aria-live="polite"
+      role={live ? "status" : undefined}
+      aria-live={live ? "polite" : "off"}
     >
       {message}
     </p>
@@ -37,19 +37,19 @@ function Table({ headings, bodyId, children }) {
   );
 }
 
-function LifecycleTime({ value, checkedAt }) {
+function RelativeTime({ value, now }) {
   if (!value) {
     return <span class="text-body-secondary">Not available</span>;
   }
 
   return (
     <time dateTime={value} title={formatTime(value)}>
-      {relativeTime(value, checkedAt)}
+      {relativeTime(value, now)}
     </time>
   );
 }
 
-function GroupRow({ group, checkedAt }) {
+function GroupRow({ group, now }) {
   return (
     <tr>
       <th scope="row" class="text-break">{group.group}</th>
@@ -62,10 +62,10 @@ function GroupRow({ group, checkedAt }) {
         {Object.entries(group.states).map(([name, count]) => `${name}: ${count}`).join(", ")}
       </td>
       <td data-label="Last started">
-        <LifecycleTime value={group.last_started_at} checkedAt={checkedAt} />
+        <RelativeTime value={group.last_started_at} now={now} />
       </td>
       <td data-label="Last stopped">
-        <LifecycleTime value={group.last_stopped_at} checkedAt={checkedAt} />
+        <RelativeTime value={group.last_stopped_at} now={now} />
       </td>
     </tr>
   );
@@ -96,19 +96,19 @@ function RunningProgress({ groups }) {
   );
 }
 
-function StatusPanel({ data }) {
+function StatusPanel({ data, now }) {
   if (!data) return null;
 
   return (
     <div id="container-status">
       <p class="text-body-secondary">
-        Last updated: <time dateTime={data.checked_at}>{formatTime(data.checked_at)}</time>
+        Last updated: <RelativeTime value={data.checked_at} now={now} />
       </p>
       <RunningProgress groups={data.groups} />
       {data.groups.length ? (
         <Table headings={["Group", "Status", "Container states", "Last started", "Last stopped"]}>
           {data.groups.map(group => (
-            <GroupRow key={group.group} group={group} checkedAt={data.checked_at} />
+            <GroupRow key={group.group} group={group} now={now} />
           ))}
         </Table>
       ) : (
@@ -124,9 +124,9 @@ function StatusPanel({ data }) {
   );
 }
 
-function EventRow({ event }) {
+function EventRow({ event, now }) {
   const cells = {
-    "Time (UTC)": formatTime(event.timestamp),
+    "Time": <RelativeTime value={event.timestamp} now={now} />,
     "Group": event.group ?? "Sablier",
     "Event": event.type.replaceAll("_", " "),
     "Explanation": event.explanation,
@@ -141,7 +141,7 @@ function EventRow({ event }) {
   );
 }
 
-function EventsPanel({ data }) {
+function EventsPanel({ data, now }) {
   if (!data) return null;
 
   const diagnostics = keyedRows(data.diagnostics, ["group", "type", "severity", "explanation"]);
@@ -160,9 +160,9 @@ function EventsPanel({ data }) {
           </li>
         ))}
       </ul>
-      <Table headings={["Time (UTC)", "Group", "Event", "Explanation"]} bodyId="events">
+      <Table headings={["Time", "Group", "Event", "Explanation"]} bodyId="events">
         {events.map(({ key, value }) => (
-          <EventRow key={key} event={value} />
+          <EventRow key={key} event={value} now={now} />
         ))}
       </Table>
     </div>
@@ -171,6 +171,7 @@ function EventsPanel({ data }) {
 
 export default function App() {
   const [activeTab, setActiveTab] = useState("status");
+  const [now, setNow] = useState(() => new Date().toISOString());
   const [status, setStatus] = useState(null);
   const [events, setEvents] = useState(null);
   const [statusError, setStatusError] = useState("");
@@ -178,6 +179,12 @@ export default function App() {
   const [sessionError, setSessionError] = useState("");
   const [connected, setConnected] = useState(false);
   const [connectionMessage, setConnectionMessage] = useState("Connecting to live updates...");
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date().toISOString()), 1_000);
+
+    return () => clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     const socket = io({ autoConnect: false });
@@ -290,7 +297,7 @@ export default function App() {
           message={statusError || (status ? "Container status is up to date." : "Loading container status...")}
           warning={Boolean(statusError)}
         />
-        <StatusPanel data={status} />
+        <StatusPanel data={status} now={now} />
       </section>
       <section
         id="events-panel"
@@ -305,10 +312,11 @@ export default function App() {
         </p>
         <Notice
           id="events-state"
-          message={eventsError || (events ? diagnosticsMessage(events) : "Loading diagnostics...")}
+          message={eventsError || (events ? diagnosticsMessage(events, now) : "Loading diagnostics...")}
           warning={Boolean(eventsError)}
+          live={Boolean(eventsError) || !events}
         />
-        <EventsPanel data={events} />
+        <EventsPanel data={events} now={now} />
         <p class="small text-body-secondary">
           Up to 100 events from the past hour are shown. History is bounded by the latest
           1,000 daemon log records and Docker log rotation, and may be incomplete.

@@ -39,9 +39,11 @@ An open tab keeps the status service awake; close it to allow idle sleep.
 
 Container status and Sablier events have separate tabs with standard button
 controls (Tab to focus, Enter or Space to select).
-Both continue receiving live updates while either tab is selected. Status shows
-the exact UTC time of its last successful update, rather than a fixed relative
-age. A running-container progress bar counts individual containers across all
+Both continue receiving live updates while either tab is selected. Status updates,
+diagnostic checks, event timestamps, and lifecycle times show relative ages such
+as "12 seconds ago", refreshed every second using the browser's current time.
+Exact UTC timestamps are available only on hover over time entries. A running-container
+progress bar counts individual containers across all
 groups: 100% when all are running and 0% when none are running (including an empty
 deployment). Paused, exited, and other non-running states still count toward the total.
 

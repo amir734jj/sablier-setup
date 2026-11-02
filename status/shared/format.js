@@ -60,12 +60,12 @@ export function runningProgress(groups) {
   };
 }
 
-export function diagnosticsMessage(data) {
+export function diagnosticsMessage(data, now) {
   const summary = data.events.length
     ? "Events checked"
     : "No recognized events in the available log window; checked";
   const messages = [
-    `${summary} at ${data.checked_at}.`,
+    `${summary} ${relativeTime(data.checked_at, now)}.`,
     "Summaries describe recent history, not current failures.",
   ];
 

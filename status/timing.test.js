@@ -235,11 +235,27 @@ test("keeps duplicate event keys unique and existing keys stable when new events
 
 test("includes bounded-history notices in diagnostic summaries", () => {
   const data = { ...diagnosticData(), events: [], limited: true };
-  const message = diagnosticsMessage(data);
+  const message = diagnosticsMessage(data, "2026-11-02T16:00:12.000Z");
 
   assert.match(message, /No recognized events/);
+  assert.match(message, /checked 12 seconds ago/);
   assert.match(message, /History limit reached/);
   assert.match(message, /2 unrecognized or unrelated records omitted/);
+});
+
+test("updates diagnostic check ages relative to the current time without visible UTC timestamps", () => {
+  const data = diagnosticData();
+
+  for (const [now, age] of [
+    ["2026-11-02T16:00:12.000Z", "12 seconds ago"],
+    ["2026-11-02T16:00:13.000Z", "13 seconds ago"],
+    ["2026-11-02T16:01:05.000Z", "1 minute ago"],
+  ]) {
+    const message = diagnosticsMessage(data, now);
+
+    assert.ok(message.startsWith(`Events checked ${age}.`));
+    assert.doesNotMatch(message, /2026-|UTC/);
+  }
 });
 
 test("publishes JSON snapshots over WebSocket and supports the polling transport", { timeout: 15_000 }, async t => {
