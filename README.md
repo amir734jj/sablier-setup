@@ -6,13 +6,36 @@ Coolify. The Compose file preserves Sablier's 10-minute idle sessions and its
 
 ## Status endpoint
 
-After deployment, https://sablier.hesamian.com/ returns a server-rendered HTML
-status page rendered with [Pug](./status/views/status.pug).
+After deployment, https://sablier.hesamian.com/ returns a
+[Preact dashboard written in JSX](./status/src/App.jsx).
 It uses cacheable Bootstrap 5.3.8 CSS from jsDelivr: running groups have green
 success badges; all other statuses have red danger badges. Styling requires CDN access.
-`/status` returns the same page; `/health` returns JSON and also
-checks access to Docker. JavaScript reloads the page every 30 seconds, including
-error pages. An open tab keeps the status service awake; close it to allow idle sleep.
+`/status` returns the same page; `/api/status` returns JSON and also
+checks access to Docker. `/api/events` returns sanitized diagnostics, and
+`/api/session` renews the service's idle session without reading Docker.
+The existing `/health`, `/events`, and `/session` routes remain compatibility
+aliases; the Docker health check continues to use `/health`.
+[Socket.IO](https://socket.io/) delivers JSON snapshots
+without reloading the page. Preact reconciles keyed group, event, and diagnostic
+rows so unchanged DOM nodes are preserved. Container status is checked every
+30 seconds; diagnostics every 5 seconds. Preact, its hooks, Luxon, and the Socket.IO
+browser client are bundled by [Vite](./status/vite.config.js) from pinned npm
+dependencies and served locally. Express serves the production build from
+`status/dist` with `express.static`; no browser import maps or manually exposed
+vendor modules are needed. A separate `/api` router exposes only the fixed,
+read-only status, events, and session endpoints. It uses the restricted internal
+Docker proxy with the existing validation, response limits, and error handling;
+it is not an unrestricted Docker reverse proxy. Unknown API paths return JSON
+404 responses and never fall through to frontend files.
+Backend data loading, validation, summaries, and concurrency helpers live in
+[status/utils.js](./status/utils.js); [status/server.js](./status/server.js)
+wires the HTTP routes and Socket.IO connections.
+Shared time formatting and row-key helpers live in
+[status/shared/format.js](./status/shared/format.js).
+The dashboard requires JavaScript; without it, `/api/status` and `/api/events` remain
+available as read-only JSON. Unlike the previous Pug page, the initial HTML
+does not contain container data and remains available when Docker is unavailable.
+An open tab keeps the status service awake; close it to allow idle sleep.
 
 Only containers labelled `sablier.enable=true` are included, grouped by
 `sablier.group`. The response contains a UTC timestamp, group names, aggregate
@@ -47,7 +70,7 @@ This endpoint is intentionally public. It does not expose container identifiers,
 commands, environments, credentials, or start/stop controls. Responses are not
 cached. HTML, health responses, and all proxy responses send
 `Cache-Control: no-store, no-cache, max-age=0, must-revalidate`, with legacy and
-shared-cache directives. Dynamic-response ETags and Pug view caching are disabled.
+shared-cache directives. Dynamic-response ETags are disabled.
 Each status read queries Docker again; no container data is cached.
 The static Bootstrap stylesheet is separate and may be cached by the CDN and browser.
 Configure any external CDN or reverse-proxy rules to honor these headers or bypass
@@ -57,12 +80,33 @@ empty, apparently healthy list.
 
 ### Public Sablier diagnostics
 
-The page also polls `/events` every 5 seconds for a sanitized Sablier event
-timeline and rule-based summaries. Container status still refreshes every
-30 seconds. Diagnostics are independent: an unavailable log source returns
-HTTP 503 from `/events` and shows an explicit error without hiding container
-status. Previously displayed events are marked stale until a read succeeds.
+The webserver reads diagnostics every 5 seconds per live connection and publishes
+a sanitized Sablier event timeline and rule-based summaries as JSON.
+`/api/events` is available as a read-only JSON endpoint. Diagnostics are independent:
+an unavailable log source returns HTTP 503 from `/api/events` and sends an explicit
+streamed error without hiding container status. Previously displayed events are
+marked stale until a read succeeds. Status failures likewise preserve the previous
+status and mark it stale without interrupting diagnostics.
 Summaries describe recent history, not proof of an ongoing failure.
+
+Socket.IO uses `/socket.io/` with at most eight simultaneous dashboard connections.
+Its reads share the existing eight-request concurrency limit with JSON requests;
+reads never overlap within a live connection. Disconnects release connection slots
+and stop further reads. Socket.IO provides heartbeats, automatic reconnection,
+and HTTP long-polling fallback when WebSocket upgrades are unavailable.
+Rejected connections retry automatically, and every new connection requests fresh
+snapshots. The socket exposes no container-control actions.
+
+Socket messages do not pass through the HTTP wake middleware. An open dashboard
+therefore calls the read-only `/api/session` endpoint once a minute to renew the status
+service's Sablier session without another Docker read. Closing the page stops both
+the socket and session renewal. Connection and renewal notices warn when updates
+may stop or displayed data may be stale.
+
+Reverse proxies must forward `/socket.io/`, including WebSocket upgrades and
+long-polling GET/POST requests. Do not cache Socket.IO transport responses;
+the server sends `Cache-Control: no-store, no-cache, max-age=0, must-revalidate`.
+The former `/live` SSE endpoint has been removed.
 
 The proxy reads **only the Sablier daemon's logs**, never application logs.
 It resolves exactly one container labelled `sablier.diagnostics=true`, set on
@@ -100,7 +144,7 @@ Log discovery and reads share a 3-second deadline, 2 MB per upstream response,
 and the proxy's eight-request concurrency limit. Event mapping is limited to
 128 enabled containers and group labels of at most 256 characters.
 Log-source, framing, size, and Docker errors are logged privately and return
-a generic public HTTP 503. `/health` remains a container-status check and
+a generic public HTTP 503. `/api/status` and its `/health` alias remain container-status checks and
 does not depend on diagnostic log availability.
 
 ## Set up Sablier in Coolify
@@ -325,6 +369,32 @@ network only. Its port is not published. A read-only Docker
 socket mount alone does not restrict Docker API operations; the HTTP allowlist
 supplies that restriction.
 
+## Local development
+
+Use Node.js 24 or newer. Install dependencies and start the backend:
+
+```sh
+npm ci --prefix status
+npm start --prefix status
+```
+
+In another terminal, start Vite:
+
+```sh
+npm run dev --prefix status
+```
+
+Open the URL Vite prints (normally `http://localhost:5173`). Its development
+proxy forwards `/api/` and `/socket.io/` (including WebSocket upgrades) to Express
+on port 8080, along with the legacy JSON aliases. JSX changes update through
+Vite's hot reload.
+
+For production, `npm run build --prefix status` generates `status/dist`, then
+`npm start --prefix status` serves that build and the API on port 8080.
+The [Dockerfile](./status/Dockerfile) builds the frontend in a separate stage,
+removes development dependencies, and copies the generated assets into the runtime
+image. Its `npm ci` step requires the lockfile to match the dependency manifest.
+
 ## Tests
 
 Both Node.js services use the public npm registry (`https://registry.npmjs.org/`)
@@ -339,3 +409,6 @@ node --test status/timing.test.js
 npm test --prefix proxy
 docker compose config --quiet
 ```
+
+Status server tests use temporary frontend build fixtures, so they do not require
+running Vite or building the dashboard.

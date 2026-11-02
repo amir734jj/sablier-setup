@@ -1,0 +1,38 @@
+@media (max-width: 767.98px) {
+  .status-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .status-table,
+  .status-table tbody,
+  .status-table tr,
+  .status-table th,
+  .status-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .status-table tbody tr {
+    margin-bottom: 1rem;
+  }
+
+  .status-table tbody td {
+    display: grid;
+    grid-template-columns: minmax(0, 7rem) minmax(0, 1fr);
+    gap: .5rem;
+    overflow-wrap: anywhere;
+  }
+
+  .status-table tbody td::before {
+    content: attr(data-label);
+    font-weight: 600;
+  }
+}

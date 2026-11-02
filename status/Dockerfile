@@ -1,9 +1,14 @@
-FROM node:lts-alpine
+FROM node:lts-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json .npmrc ./
-RUN npm ci --omit=dev
-COPY server.js .
-COPY views ./views
+RUN npm ci
+COPY . .
+RUN npm run build
+RUN npm prune --omit=dev
+
+FROM node:lts-alpine
+WORKDIR /app
+COPY --from=build /app ./
 USER node
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=15s \

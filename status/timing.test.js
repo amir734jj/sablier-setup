@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { DateTime } from "luxon";
-import { createApp, formatTime, readEvents, readStatus, relativeTime, summarize } from "./server.js";
+import { io as connect } from "socket.io-client";
+import { createStatusServer, formatTime, readEvents, readStatus, relativeTime, summarize } from "./server.js";
+import { diagnosticsMessage, keyedRows } from "./shared/format.js";
 
 const container = (state, started, stopped) => ({
   Labels: { "sablier.enable": "true", "sablier.group": "example" },
@@ -51,51 +56,262 @@ test("normalizes timestamp offsets and formats UTC with milliseconds", () => {
   assert.throws(() => formatTime("invalid"), /Invalid Docker/);
 });
 
-test("renders lifecycle columns and keeps JSON health timing fields", async t => {
-  const data = summarize([container("running", "2026-11-02T10:00:00Z", null)]);
-  const server = createApp(async () => data).listen(0, "127.0.0.1");
+async function startServer(t, loadStatus = async () => summarize([]), loadEvents = async () => diagnosticData()) {
+  const webRoot = await mkdtemp(join(tmpdir(), "sablier-status-test-"));
+
+  await mkdir(join(webRoot, "assets"));
+  await writeFile(join(webRoot, "index.html"),
+    '<!doctype html><main id="app"></main><script type="module" src="/assets/dashboard.js"></script>');
+  await writeFile(join(webRoot, "assets", "dashboard.js"), 'console.info("Frontend build fixture");');
+  await writeFile(join(webRoot, "assets", "dashboard.css"), "body { color: inherit; }");
+
+  const instance = createStatusServer(loadStatus, loadEvents, { webRoot });
+  const { server, io } = instance;
+
+  server.listen(0, "127.0.0.1");
   await once(server, "listening");
-  t.after(() => new Promise(resolve => {
-    server.close(resolve);
-    server.closeAllConnections();
-  }));
-  const url = `http://127.0.0.1:${server.address().port}`;
+
+  t.after(async () => {
+    await new Promise(resolve => {
+      io.close(resolve);
+      server.closeAllConnections();
+    });
+
+    await rm(webRoot, { recursive: true, force: true });
+  });
+
+  return { ...instance, webRoot, url: `http://127.0.0.1:${server.address().port}` };
+}
+
+function createClient(t, url, options = {}) {
+  const socket = connect(url, {
+    autoConnect: false,
+    forceNew: true,
+    reconnection: false,
+    transports: ["websocket"],
+    ...options,
+  });
+
+  t.after(() => socket.disconnect());
+
+  return socket;
+}
+
+async function connectFor(socket, ...events) {
+  const messages = events.map(event => once(socket, event));
+
+  socket.connect();
+
+  return Promise.all(messages);
+}
+
+async function disconnectClient(socket, io) {
+  const disconnected = once(io.of("/").sockets.get(socket.id), "disconnect");
+
+  socket.disconnect();
+  await disconnected;
+}
+
+test("serves the configured frontend build and JSON health timing fields", async t => {
+  const data = summarize([container("running", "2026-11-02T10:00:00Z", null)]);
+  const { url } = await startServer(t, async () => data);
   const html = await (await fetch(url)).text();
-  assert.match(html, /Last started/);
-  assert.match(html, /Last stopped/);
-  assert.match(html, /@media \(max-width: 767\.98px\)/);
-  for (const label of ["Status", "Container states", "Last started", "Last stopped"]) {
-    assert.match(html, new RegExp(`data-label="${label}"`));
+
+  assert.match(html, /type="module" src="\/assets\/dashboard\.js"/);
+  assert.doesNotMatch(html, /htmx|idiomorph|sse-connect|location\.reload/i);
+
+  for (const path of ["/assets/dashboard.js", "/assets/dashboard.css"]) {
+    const response = await fetch(url + path);
+
+    assert.equal(response.status, 200, path);
+    assert.ok((await response.text()).length > 0, path);
   }
-  assert.match(html, /Not available/);
-  assert.match(html, /datetime="2026-11-02T10:00:00.000Z"/);
-  assert.match(html, /title="2026-11-02 10:00:00.000 UTC"/);
-  assert.doesNotMatch(html.replace(/<[^>]*>/g, ""), /2026-11-02 10:00:00.000 UTC/);
-  assert.match(html, /window\.setTimeout\(\(\) => window\.location\.reload\(\), 30_000\)/);
-  assert.match(html, /if \(event\.persisted\) window\.location\.reload\(\)/);
-  assert.match(html, /href="https:\/\/cdn\.jsdelivr\.net\/npm\/bootstrap@5\.3\.8\/dist\/css\/bootstrap\.min\.css"/);
-  assert.match(html, /Sablier events/);
-  assert.match(html, /window\.setTimeout\(refreshEvents, 5_000\)/);
-  assert.match(html, /fetch\("\/events", \{ cache: "no-store"/);
-  assert.match(html, /cell\.textContent = value/);
-  assert.match(html, /Any events below are stale/);
-  new Function(html.match(/<script>([\s\S]*?)<\/script>/)[1]);
+
   assert.deepEqual(await (await fetch(`${url}/health`)).json(), data);
+  assert.deepEqual(await (await fetch(`${url}/api/status`)).json(), data);
+});
+
+test("serves static files from the build root without allowing API paths to fall through", async t => {
+  const { url, webRoot } = await startServer(t);
+
+  await writeFile(join(webRoot, "robots.txt"), "User-agent: *\nDisallow:\n");
+  await mkdir(join(webRoot, "api"));
+  await writeFile(join(webRoot, "api", "private.json"), '{"unexpected":true}');
+
+  const staticFile = await fetch(`${url}/robots.txt`);
+
+  assert.equal(staticFile.status, 200);
+  assert.equal(await staticFile.text(), "User-agent: *\nDisallow:\n");
+
+  for (const path of ["/api", "/api/missing", "/api/private.json", "/api/containers/json"]) {
+    const response = await fetch(url + path);
+
+    assert.equal(response.status, 404, path);
+    assert.deepEqual(await response.json(), { error: "Not found" });
+  }
+});
+
+test("keeps the API read-only and preserves legacy JSON endpoints", async t => {
+  const status = summarize([]);
+  const events = diagnosticData();
+  const { url } = await startServer(t, async () => status, async () => events);
+
+  for (const path of ["/api/status", "/health"]) {
+    assert.deepEqual(await (await fetch(url + path)).json(), status);
+  }
+
+  for (const path of ["/api/events", "/events"]) {
+    assert.deepEqual(await (await fetch(url + path)).json(), events);
+  }
+
+  for (const path of ["/api/session", "/session"]) {
+    assert.equal((await fetch(url + path)).status, 204);
+  }
+
+  for (const path of ["/api/status", "/api/events", "/api/session"]) {
+    for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+      const response = await fetch(url + path, { method });
+
+      assert.equal(response.status, 405, `${method} ${path}`);
+      assert.deepEqual(await response.json(), { error: "Read-only endpoint" });
+    }
+  }
+});
+
+test("uses a Vite JSX entry point without browser import maps or vendor routes", async () => {
+  const html = await readFile(new URL("./index.html", import.meta.url), "utf8");
+
+  assert.match(html, /type="module" src="\/src\/main\.jsx"/);
+  assert.match(html, /JavaScript is required/);
+  assert.match(html, /href="https:\/\/cdn\.jsdelivr\.net\/npm\/bootstrap@5\.3\.8\/dist\/css\/bootstrap\.min\.css"/);
+  assert.doesNotMatch(html, /importmap|\/vendor\//);
+});
+
+test("reports missing frontend builds without misreporting Docker health", async t => {
+  t.mock.method(console, "error", () => {});
+
+  const { url, webRoot } = await startServer(t);
+
+  await unlink(join(webRoot, "index.html"));
+
+  const missing = await fetch(url);
+
+  assert.equal(missing.status, 503);
+  assert.deepEqual(await missing.json(), { error: "Dashboard assets are temporarily unavailable" });
+  assert.equal((await fetch(`${url}/health`)).status, 200);
+});
+
+test("keeps duplicate event keys unique and existing keys stable when new events arrive", () => {
+  const event = diagnosticData().events[0];
+  const fields = ["timestamp", "group", "type", "severity", "explanation"];
+  const original = keyedRows([event, { ...event }], fields);
+  const updated = keyedRows([{ ...event, timestamp: "2026-11-02T16:00:00Z" }, event, { ...event }], fields);
+
+  assert.notEqual(original[0].key, original[1].key);
+  assert.deepEqual(updated.slice(1).map(row => row.key), original.map(row => row.key));
+});
+
+test("includes bounded-history notices in diagnostic summaries", () => {
+  const data = { ...diagnosticData(), events: [], limited: true };
+  const message = diagnosticsMessage(data);
+
+  assert.match(message, /No recognized events/);
+  assert.match(message, /History limit reached/);
+  assert.match(message, /2 unrecognized or unrelated records omitted/);
+});
+
+test("publishes JSON snapshots over WebSocket and supports the polling transport", { timeout: 15_000 }, async t => {
+  const status = summarize([container("running", "2026-11-02T10:00:00Z", null)]);
+  const data = diagnosticData();
+  const { url } = await startServer(t, async () => status, async () => data);
+
+  for (const transport of ["websocket", "polling"]) {
+    const socket = createClient(t, url, { transports: [transport] });
+    const [[receivedStatus], [receivedEvents]] = await connectFor(socket, "status", "events");
+
+    assert.deepEqual(receivedStatus, status);
+    assert.deepEqual(receivedEvents, data);
+    assert.equal(socket.io.engine.transport.name, transport);
+  }
+});
+
+test("publishes independent failures and fresh snapshots after reconnecting", { timeout: 15_000 }, async t => {
+  const log = t.mock.method(console, "error", () => {});
+  let statusFail = true;
+  let eventsFail = false;
+  const { url, io } = await startServer(t, async () => {
+    if (statusFail) throw new Error("SECRET status detail");
+
+    return summarize([]);
+  }, async () => {
+    if (eventsFail) throw new Error("SECRET log detail");
+
+    return diagnosticData();
+  });
+  const socket = createClient(t, url);
+  const [[statusError], [events]] = await connectFor(socket, "status:error", "events");
+
+  assert.match(statusError.message, /status below is stale/);
+  assert.doesNotMatch(statusError.message, /SECRET/);
+  assert.deepEqual(events, diagnosticData());
+
+  await disconnectClient(socket, io);
+  statusFail = false;
+  eventsFail = true;
+
+  const [[status], [eventsError]] = await connectFor(socket, "status", "events:error");
+
+  assert.deepEqual(status.groups, []);
+  assert.match(eventsError.message, /Any events below are stale/);
+  assert.doesNotMatch(eventsError.message, /SECRET/);
+
+  await disconnectClient(socket, io);
+  eventsFail = false;
+
+  const [[recoveredStatus], [recoveredEvents]] = await connectFor(socket, "status", "events");
+
+  assert.deepEqual(recoveredStatus.groups, []);
+  assert.deepEqual(recoveredEvents, diagnosticData());
+  assert.equal(log.mock.callCount(), 2);
+});
+
+test("bounds live connections and releases slots when clients disconnect", { timeout: 15_000 }, async t => {
+  const { url, io } = await startServer(t);
+  const clients = [];
+
+  for (let index = 0; index < 8; index++) {
+    const socket = createClient(t, url);
+
+    await connectFor(socket, "status", "events");
+    clients.push(socket);
+  }
+
+  const rejected = createClient(t, url);
+  const [[error]] = await connectFor(rejected, "connect_error");
+
+  assert.equal(error.message, "Live updates are busy");
+  assert.equal((await fetch(`${url}/health`)).status, 200);
+
+  await disconnectClient(clients[0], io);
+  await connectFor(rejected, "status", "events");
+
+  assert.equal(rejected.connected, true);
 });
 
 test("disables caching for pages, health, and error responses", async t => {
   let calls = 0;
-  const app = createApp(async () => { calls++; return summarize([]); });
+  const { app, url } = await startServer(t, async () => {
+    calls++;
+
+    return summarize([]);
+  });
+
   assert.equal(app.enabled("etag"), false);
-  assert.equal(app.enabled("view cache"), false);
-  const server = app.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  t.after(() => new Promise(resolve => {
-    server.close(resolve);
-    server.closeAllConnections();
-  }));
-  const url = `http://127.0.0.1:${server.address().port}`;
-  for (const [path, status] of [["/", 200], ["/status", 200], ["/health", 200], ["/missing", 404], ["/health", 200]]) {
+
+  for (const [path, status] of [
+    ["/", 200], ["/status", 200], ["/api/session", 204], ["/api/status", 200],
+    ["/api/events", 200], ["/api/missing", 404], ["/missing", 404], ["/health", 200],
+  ]) {
     const response = await fetch(url + path, {
       headers: { "If-None-Match": "*", "If-Modified-Since": "Mon, 02 Nov 2026 12:00:00 GMT" },
     });
@@ -108,7 +324,18 @@ test("disables caching for pages, health, and error responses", async t => {
     assert.equal(response.headers.get("last-modified"), null);
     await response.arrayBuffer();
   }
-  assert.equal(calls, 4);
+  assert.equal(calls, 2);
+
+  const polling = await fetch(`${url}/socket.io/?EIO=4&transport=polling`);
+
+  assert.equal(polling.status, 200);
+  assert.match(polling.headers.get("cache-control"), /no-store/);
+  await polling.text();
+
+  const denied = await fetch(`${url}/api/session`, { method: "POST" });
+
+  assert.equal(denied.status, 405);
+  assert.deepEqual(await denied.json(), { error: "Read-only endpoint" });
 });
 
 test("requests uncached Docker status on every read", async () => {
@@ -163,23 +390,17 @@ test("serves diagnostics independently and preserves healthy container status on
   const log = t.mock.method(console, "error", () => {});
   let fail = false;
   const data = diagnosticData();
-  const server = createApp(async () => summarize([]), async () => {
+  const { url } = await startServer(t, async () => summarize([]), async () => {
     if (fail) throw new Error("SECRET upstream detail");
     return data;
-  }).listen(0, "127.0.0.1");
-  await once(server, "listening");
-  t.after(() => new Promise(resolve => {
-    server.close(resolve);
-    server.closeAllConnections();
-  }));
-  const url = `http://127.0.0.1:${server.address().port}`;
-  const response = await fetch(`${url}/events`, { headers: { "If-None-Match": "*" } });
+  });
+  const response = await fetch(`${url}/api/events`, { headers: { "If-None-Match": "*" } });
   assert.equal(response.status, 200);
   assert.match(response.headers.get("cache-control"), /no-store/);
   assert.equal(response.headers.get("etag"), null);
   assert.deepEqual(await response.json(), data);
   fail = true;
-  const unavailable = await fetch(`${url}/events`);
+  const unavailable = await fetch(`${url}/api/events`);
   assert.equal(unavailable.status, 503);
   assert.deepEqual(await unavailable.json(), { error: "Sablier diagnostics are temporarily unavailable" });
   assert.equal(log.mock.callCount(), 1);
@@ -188,7 +409,7 @@ test("serves diagnostics independently and preserves healthy container status on
     assert.equal(healthy.status, 200);
     await healthy.text();
   }
-  const denied = await fetch(`${url}/events`, { method: "POST" });
+  const denied = await fetch(`${url}/api/events`, { method: "POST" });
   assert.equal(denied.status, 405);
   assert.deepEqual(await denied.json(), { error: "Read-only endpoint" });
 });

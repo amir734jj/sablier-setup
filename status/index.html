@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Container status</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" integrity="sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB" crossorigin="anonymous">
+    <script type="module" src="/src/main.jsx"></script>
+  </head>
+  <body class="bg-body-tertiary">
+    <main id="app" class="container py-5">
+      <h1 class="mb-3">Container status</h1>
+      <p role="status">Loading the live dashboard. JavaScript is required.</p>
+    </main>
+    <noscript>
+      <p class="container alert alert-info">
+        Enable JavaScript to view the dashboard. Read-only JSON is available at
+        <a href="/api/status">/api/status</a> and <a href="/api/events">/api/events</a>.
+      </p>
+    </noscript>
+  </body>
+</html>
