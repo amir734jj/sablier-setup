@@ -37,6 +37,14 @@ available as read-only JSON. Unlike the previous Pug page, the initial HTML
 does not contain container data and remains available when Docker is unavailable.
 An open tab keeps the status service awake; close it to allow idle sleep.
 
+Container status and Sablier events have separate tabs with standard button
+controls (Tab to focus, Enter or Space to select).
+Both continue receiving live updates while either tab is selected. Status shows
+the exact UTC time of its last successful update, rather than a fixed relative
+age. A running-container progress bar counts individual containers across all
+groups: 100% when all are running and 0% when none are running (including an empty
+deployment). Paused, exited, and other non-running states still count toward the total.
+
 Only containers labelled `sablier.enable=true` are included, grouped by
 `sablier.group`. The response contains a UTC timestamp, group names, aggregate
 status, and counts of actual Docker states.

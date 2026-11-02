@@ -1,6 +1,11 @@
 import { useEffect, useState } from "preact/hooks";
 import { io } from "socket.io-client";
-import { diagnosticsMessage, formatTime, keyedRows, relativeTime } from "../shared/format.js";
+import { diagnosticsMessage, formatTime, keyedRows, relativeTime, runningProgress } from "../shared/format.js";
+
+const TABS = [
+  { id: "status", label: "Container status" },
+  { id: "events", label: "Sablier events" },
+];
 
 function Notice({ id, message, warning = false }) {
   return (
@@ -66,14 +71,40 @@ function GroupRow({ group, checkedAt }) {
   );
 }
 
+function RunningProgress({ groups }) {
+  const { running, total, percentage } = runningProgress(groups);
+  const percentageLabel = percentage.toLocaleString("en", { maximumFractionDigits: 1 });
+
+  return (
+    <div class="mb-4">
+      <div class="d-flex justify-content-between gap-3 mb-2">
+        <span class="fw-semibold">Running containers</span>
+        <span>{running} / {total} ({percentageLabel}%)</span>
+      </div>
+      <div
+        class="progress"
+        role="progressbar"
+        aria-label="Running containers"
+        aria-valuenow={percentage}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuetext={`${running} of ${total} containers running (${percentageLabel}%)`}
+      >
+        <div class="progress-bar bg-success" style={{ width: `${percentage}%` }} />
+      </div>
+    </div>
+  );
+}
+
 function StatusPanel({ data }) {
   if (!data) return null;
 
   return (
     <div id="container-status">
       <p class="text-body-secondary">
-        Last checked: <LifecycleTime value={data.checked_at} checkedAt={data.checked_at} />
+        Last updated: <time dateTime={data.checked_at}>{formatTime(data.checked_at)}</time>
       </p>
+      <RunningProgress groups={data.groups} />
       {data.groups.length ? (
         <Table headings={["Group", "Status", "Container states", "Last started", "Last stopped"]}>
           {data.groups.map(group => (
@@ -139,6 +170,7 @@ function EventsPanel({ data }) {
 }
 
 export default function App() {
+  const [activeTab, setActiveTab] = useState("status");
   const [status, setStatus] = useState(null);
   const [events, setEvents] = useState(null);
   const [statusError, setStatusError] = useState("");
@@ -229,17 +261,43 @@ export default function App() {
 
   return (
     <>
-      <h1 class="mb-3">Container status</h1>
+      <h1 class="mb-3">Sablier dashboard</h1>
       <Notice id="connection-state" message={connectionMessage} warning={!connected} />
       {sessionError && <Notice id="session-state" message={sessionError} warning />}
-      <Notice
-        id="status-state"
-        message={statusError || (status ? "Container status is up to date." : "Loading container status...")}
-        warning={Boolean(statusError)}
-      />
-      <StatusPanel data={status} />
-      <section class="mt-5" aria-labelledby="events-heading">
-        <h2 id="events-heading">Sablier events</h2>
+      <div class="nav nav-tabs" role="group" aria-label="Dashboard sections">
+        {TABS.map(tab => (
+          <button
+            key={tab.id}
+            id={`${tab.id}-tab`}
+            class={`nav-link ${activeTab === tab.id ? "active" : ""}`}
+            type="button"
+            aria-pressed={activeTab === tab.id}
+            aria-controls={`${tab.id}-panel`}
+            onClick={() => setActiveTab(tab.id)}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+      <section
+        id="status-panel"
+        class="pt-3"
+        aria-labelledby="status-tab"
+        hidden={activeTab !== "status"}
+      >
+        <Notice
+          id="status-state"
+          message={statusError || (status ? "Container status is up to date." : "Loading container status...")}
+          warning={Boolean(statusError)}
+        />
+        <StatusPanel data={status} />
+      </section>
+      <section
+        id="events-panel"
+        class="pt-3"
+        aria-labelledby="events-tab"
+        hidden={activeTab !== "events"}
+      >
         <p class="small text-body-secondary">
           Recent recognized Sablier events for currently deployed, enabled containers.
           Only public group names and fixed explanations are shown, never raw logs
@@ -251,14 +309,14 @@ export default function App() {
           warning={Boolean(eventsError)}
         />
         <EventsPanel data={events} />
+        <p class="small text-body-secondary">
+          Up to 100 events from the past hour are shown. History is bounded by the latest
+          1,000 daemon log records and Docker log rotation, and may be incomplete.
+        </p>
       </section>
       <p class="small text-body-secondary">
         Container status is checked every 30 seconds and events every 5 seconds.
         Updates arrive over Socket.IO without page reloads.
-      </p>
-      <p class="small text-body-secondary">
-        Up to 100 events from the past hour are shown. History is bounded by the latest
-        1,000 daemon log records and Docker log rotation, and may be incomplete.
       </p>
     </>
   );

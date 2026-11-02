@@ -44,6 +44,22 @@ export function keyedRows(items, fields) {
   });
 }
 
+export function runningProgress(groups) {
+  let running = 0;
+  let total = 0;
+
+  for (const { states } of groups) {
+    running += states.running ?? 0;
+    total += Object.values(states).reduce((sum, count) => sum + count, 0);
+  }
+
+  return {
+    running,
+    total,
+    percentage: total === 0 ? 0 : (running / total) * 100,
+  };
+}
+
 export function diagnosticsMessage(data) {
   const summary = data.events.length
     ? "Events checked"

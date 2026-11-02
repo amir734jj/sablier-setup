@@ -7,7 +7,7 @@ import test from "node:test";
 import { DateTime } from "luxon";
 import { io as connect } from "socket.io-client";
 import { createStatusServer, formatTime, readEvents, readStatus, relativeTime, summarize } from "./server.js";
-import { diagnosticsMessage, keyedRows } from "./shared/format.js";
+import { diagnosticsMessage, keyedRows, runningProgress } from "./shared/format.js";
 
 const container = (state, started, stopped) => ({
   Labels: { "sablier.enable": "true", "sablier.group": "example" },
@@ -54,6 +54,28 @@ test("normalizes timestamp offsets and formats UTC with milliseconds", () => {
   assert.equal(formatTime(group.last_started_at), "2026-11-02 10:30:45.123 UTC");
   assert.equal(formatTime("2026-11-02T12:00:00+02:00"), "2026-11-02 10:00:00.000 UTC");
   assert.throws(() => formatTime("invalid"), /Invalid Docker/);
+});
+
+test("reports running progress at zero, full capacity, and mixed container counts", () => {
+  assert.deepEqual(runningProgress([]), { running: 0, total: 0, percentage: 0 });
+  assert.deepEqual(runningProgress([{ states: { exited: 3, paused: 2 } }]),
+    { running: 0, total: 5, percentage: 0 });
+  assert.deepEqual(runningProgress([{ states: { running: 2 } }, { states: { running: 3 } }]),
+    { running: 5, total: 5, percentage: 100 });
+  assert.deepEqual(runningProgress([{ states: { running: 1 } }, { states: { exited: 3 } }]),
+    { running: 1, total: 4, percentage: 25 });
+  assert.deepEqual(runningProgress([{ states: { running: 2, paused: 1, restarting: 1 } }]),
+    { running: 2, total: 4, percentage: 50 });
+});
+
+test("preserves fractional running percentages and does not report partial capacity as full", () => {
+  const fractional = runningProgress([{ states: { running: 1, exited: 2 } }]);
+  const nearlyFull = runningProgress([{ states: { running: 127, exited: 1 } }]);
+
+  assert.equal(fractional.running, 1);
+  assert.equal(fractional.total, 3);
+  assert.ok(Math.abs(fractional.percentage - 100 / 3) < 1e-10);
+  assert.equal(nearlyFull.percentage, 99.21875);
 });
 
 async function startServer(t, loadStatus = async () => summarize([]), loadEvents = async () => diagnosticData()) {
