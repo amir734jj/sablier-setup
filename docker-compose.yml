@@ -1,0 +1,90 @@
+services:
+  sablier:
+    image: sablierapp/sablier:1.19.1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/bin/sablier", "health", "--url", "http://127.0.0.1:10000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    command:
+      - start
+      - --provider.name=docker
+      - --provider.reject-unlabeled-requests=true
+      - --provider.verify-enabled-on-expiration=true
+      - --sessions.default-duration=10m
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      coolify:
+        aliases:
+          - sablier-idle-website
+    labels:
+      - traefik.enable=false
+
+  status:
+    build:
+      context: ./status
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 128m
+    pids_limit: 32
+    expose:
+      - "8080"
+    depends_on:
+      docker-status-proxy:
+        condition: service_healthy
+    networks:
+      - coolify
+      - status-backend
+    labels:
+      - sablier.enable=true
+      - sablier.group=my-app
+      - traefik.docker.allownonrunning=true
+      - traefik.enable=true
+      - traefik.docker.network=coolify
+      - traefik.http.routers.sablier-status.rule=Host(`sablier.hesamian.com`)
+      - traefik.http.routers.sablier-status.entrypoints=https
+      - traefik.http.routers.sablier-status.tls=true
+      - traefik.http.routers.sablier-status.tls.certresolver=letsencrypt
+      - traefik.http.routers.sablier-status.service=sablier-status
+      - traefik.http.routers.sablier-status.middlewares=sablier-status-wake
+      - traefik.http.services.sablier-status.loadbalancer.server.port=8080
+      - traefik.http.middlewares.sablier-status-wake.plugin.sablier.sablierUrl=http://sablier-idle-website:10000
+      - traefik.http.middlewares.sablier-status-wake.plugin.sablier.group=my-app
+      - traefik.http.middlewares.sablier-status-wake.plugin.sablier.sessionDuration=10m
+      - traefik.http.middlewares.sablier-status-wake.plugin.sablier.keepAliveInterval=30s
+      - traefik.http.middlewares.sablier-status-wake.plugin.sablier.blocking.timeout=1m
+      - traefik.http.routers.sablier-status-http.rule=Host(`sablier.hesamian.com`)
+      - traefik.http.routers.sablier-status-http.entrypoints=http
+      - traefik.http.routers.sablier-status-http.middlewares=sablier-status-https
+      - traefik.http.routers.sablier-status-http.service=sablier-status
+      - traefik.http.middlewares.sablier-status-https.redirectscheme.scheme=https
+
+  docker-status-proxy:
+    build:
+      context: ./proxy
+    restart: unless-stopped
+    user: "0:0"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 64m
+    pids_limit: 32
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - status-backend
+    labels:
+      - traefik.enable=false
+
+networks:
+  coolify:
+    external: true
+  status-backend:
+    internal: true

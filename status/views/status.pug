@@ -1,0 +1,47 @@
+doctype html
+html(lang="en")
+  head
+    meta(charset="utf-8")
+    meta(name="viewport" content="width=device-width, initial-scale=1")
+    title Container status
+    style.
+      :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+      body { max-width: 64rem; margin: auto; padding: 2rem 1rem; line-height: 1.5; }
+      h1 { margin-bottom: .5rem; }
+      .table { overflow-x: auto; }
+      table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; }
+      th, td { padding: .8rem; border-bottom: 1px solid #888; text-align: left; overflow-wrap: anywhere; }
+      .badge { display: inline-block; padding: .2rem .6rem; border: 1px solid; border-radius: 1rem; }
+      .running { color: light-dark(#166534, #86efac); }
+      .stopped { color: light-dark(#475569, #cbd5e1); }
+      .partially_running, .attention { color: light-dark(#854d0e, #fde047); }
+      footer { margin-top: 2rem; }
+  body
+    main
+      h1 Container status
+      if message
+        p= message
+      else
+        p
+          | Last checked: 
+          time(datetime=status.checked_at)= status.checked_at
+        if status.groups.length
+          .table
+            table
+              thead
+                tr
+                  th(scope="col") Group
+                  th(scope="col") Status
+                  th(scope="col") Container states
+              tbody
+                each group in status.groups
+                  tr
+                    th(scope="row")= group.group
+                    td
+                      span.badge(class=group.status)= group.status.replaceAll("_", " ")
+                    td= Object.entries(group.states).map(([name, count]) => `${name}: ${count}`).join(", ")
+        else
+          p No Sablier-enabled containers found.
+        p
+          a(href="") Refresh status
+        footer= status.note
