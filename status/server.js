@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Server } from "socket.io";
-import { createReaders, readEvents, readStatus, sendError } from "./utils.js";
+import { createReaders, readEvents, readMetrics, readStatus, sendError } from "./utils.js";
 
 export { formatTime, relativeTime } from "./shared/format.js";
 export { readEvents, readStatus, summarize } from "./utils.js";
@@ -153,6 +153,11 @@ function attachLiveUpdates(io, readers) {
       await update("events", readers.events,
         "Sablier diagnostics are temporarily unavailable. Any events below are stale; container status is independent. Retrying in 5 seconds.");
 
+      if (!socket.connected) return;
+
+      await update("metrics", readers.metrics,
+        "Host usage is temporarily unavailable. Any usage below is stale; retrying automatically.");
+
       if (socket.connected) {
         timer = setTimeout(poll, EVENTS_INTERVAL_MS);
       }
@@ -165,9 +170,9 @@ function attachLiveUpdates(io, readers) {
 export function createStatusServer(
   loadStatus = readStatus,
   loadEvents = readEvents,
-  { webRoot = fileURLToPath(new URL("./dist/", import.meta.url)) } = {},
+  { webRoot = fileURLToPath(new URL("./dist/", import.meta.url)), loadMetrics = readMetrics } = {},
 ) {
-  const readers = createReaders(loadStatus, loadEvents);
+  const readers = createReaders(loadStatus, loadEvents, loadMetrics);
   const app = createApp(readers, webRoot);
   const server = createServer({
     headersTimeout: 5000,

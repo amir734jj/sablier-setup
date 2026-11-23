@@ -18,7 +18,8 @@ aliases; the Docker health check continues to use `/health`.
 [Socket.IO](https://socket.io/) delivers JSON snapshots
 without reloading the page. Preact reconciles keyed group, event, and diagnostic
 rows so unchanged DOM nodes are preserved. Container status is checked every
-30 seconds; diagnostics every 5 seconds. Preact, its hooks, Luxon, and the Socket.IO
+30 seconds; diagnostics and host usage approximately every 5 seconds, plus read time.
+Preact, its hooks, Luxon, and the Socket.IO
 browser client are bundled by [Vite](./status/vite.config.js) from pinned npm
 dependencies and served locally. Express serves the production build from
 `status/dist` with `express.static`; no browser import maps or manually exposed
@@ -46,6 +47,13 @@ Exact UTC timestamps are available only on hover over time entries. A running-co
 progress bar counts individual containers across all
 groups: 100% when all are running and 0% when none are running (including an empty
 deployment). Paused, exited, and other non-running states still count toward the total.
+
+Host usage bars show CPU utilization over a one-second sample, memory used
+(total minus available, excluding reclaimable cache), and space used on the host's
+root filesystem. Memory and disk sizes use IEC units formatted by `filesize`.
+Other separately mounted filesystems are not included. Usage is
+public to dashboard visitors and updates independently of Docker status and
+diagnostics; a failed read is logged and any previous values are marked stale.
 
 Only containers labelled `sablier.enable=true` are included, grouped by
 `sablier.group`. The response contains a UTC timestamp, group names, aggregate
@@ -103,7 +111,7 @@ empty, apparently healthy list.
 
 ### Public Sablier diagnostics
 
-The webserver reads diagnostics every 5 seconds per live connection and publishes
+The webserver reads diagnostics approximately every 5 seconds per live connection and publishes
 a sanitized Sablier event timeline and rule-based summaries as JSON.
 `/api/events` is available as a read-only JSON endpoint. Diagnostics are independent:
 an unavailable log source returns HTTP 503 from `/api/events` and sends an explicit
@@ -380,7 +388,7 @@ unprivileged with a read-only filesystem, and has no Docker socket mount.
 The internal [Node.js proxy](./proxy/server.mjs) uses Dockerode's streaming
 transport to access the Docker socket. Its HTTP allowlist permits only
 `GET /containers/json` (including query parameters) and the fixed `GET /events`
-diagnostics route. The latter resolves the labelled daemon and reads its logs
+and `GET /metrics` routes. The events route resolves the labelled daemon and reads its logs
 internally through [proxy/events.mjs](./proxy/events.mjs); callers cannot select
 a container, supply log query parameters, or access a raw Docker logs endpoint.
 Other Docker API paths and mutation methods are denied.
@@ -391,6 +399,12 @@ It runs as root to access the Docker socket, on the private `status-backend`
 network only. Its port is not published. A read-only Docker
 socket mount alone does not restrict Docker API operations; the HTTP allowlist
 supplies that restriction.
+For host usage, the proxy also has read-only bind mounts of `/proc/stat`,
+`/proc/meminfo`, and the host root filesystem at `/host-root`. The root bind mount
+makes host files readable to the proxy; read-only does not prevent reading sensitive
+files or connecting to accessible Unix sockets. Deploy only if this additional
+access and public usage metrics are acceptable. The status webserver receives only
+the summarized metrics, not access to these mounts.
 
 ## Local development
 
@@ -411,6 +425,8 @@ Open the URL Vite prints (normally `http://localhost:5173`). Its development
 proxy forwards `/api/` and `/socket.io/` (including WebSocket upgrades) to Express
 on port 8080, along with the legacy JSON aliases. JSX changes update through
 Vite's hot reload.
+Outside Compose, host usage will report unavailable unless the proxy has
+`/host-proc/stat`, `/host-proc/meminfo`, and `/host-root` as in Compose.
 
 For production, `npm run build --prefix status` generates `status/dist`, then
 `npm start --prefix status` serves that build and the API on port 8080.

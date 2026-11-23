@@ -4,6 +4,7 @@ import { parse } from "node:querystring";
 import { addAbortSignal } from "node:stream";
 import { pathToFileURL } from "node:url";
 import { readEvents } from "./events.mjs";
+import { readHostMetrics } from "./metrics.mjs";
 
 const statusCodes = Object.fromEntries(Array.from({ length: 400 }, (_, index) => [index + 200, true]));
 
@@ -45,7 +46,8 @@ export function createProxy({ socketPath = "/var/run/docker.sock", timeoutMs = 3
     outgoing.setHeader("Surrogate-Control", "no-store");
     outgoing.setHeader("Content-Type", "application/json");
     const eventsRequest = incoming.url === "/events";
-    if (incoming.method !== "GET" || (!eventsRequest && !/^\/containers\/json(?:\?|$)/.test(incoming.url))) {
+    const metricsRequest = incoming.url === "/metrics";
+    if (incoming.method !== "GET" || (!eventsRequest && !metricsRequest && !/^\/containers\/json(?:\?|$)/.test(incoming.url))) {
       outgoing.writeHead(403).end(JSON.stringify({ error: "Docker API request denied" }));
       return;
     }
@@ -55,6 +57,11 @@ export function createProxy({ socketPath = "/var/run/docker.sock", timeoutMs = 3
     }
     active++;
     try {
+      if (metricsRequest) {
+        const metrics = await readHostMetrics();
+        outgoing.writeHead(200).end(JSON.stringify(metrics));
+        return;
+      }
       const signal = AbortSignal.timeout(timeoutMs);
       if (eventsRequest) {
         const events = await readEvents((path, signal) => readDocker(path, docker, signal), signal);
@@ -85,9 +92,11 @@ export function createProxy({ socketPath = "/var/run/docker.sock", timeoutMs = 3
       if (result.length > 2_000_000) throw new Error("Docker status response exceeds size limit");
       outgoing.writeHead(status).end(result);
     } catch (error) {
-      console.error(eventsRequest ? "Unable to read Sablier diagnostics:" : "Unable to proxy Docker container status:", error.message);
+      console.error(metricsRequest ? "Unable to read host usage:" :
+        eventsRequest ? "Unable to read Sablier diagnostics:" : "Unable to proxy Docker container status:", error.message);
       outgoing.writeHead(503).end(JSON.stringify({
-        error: eventsRequest ? "Sablier diagnostics are temporarily unavailable" : "Docker status is temporarily unavailable",
+        error: metricsRequest ? "Host usage is temporarily unavailable" :
+          eventsRequest ? "Sablier diagnostics are temporarily unavailable" : "Docker status is temporarily unavailable",
       }));
     } finally {
       active--;

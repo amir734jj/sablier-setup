@@ -1,6 +1,9 @@
 import { useEffect, useState } from "preact/hooks";
+import { partial } from "filesize";
 import { io } from "socket.io-client";
 import { diagnosticsMessage, formatTime, keyedRows, relativeTime, runningProgress } from "../shared/format.js";
+
+const formatBytes = partial({ standard: "iec", round: 1, locale: "en" });
 
 const TABS = [
   { id: "status", label: "Container status" },
@@ -114,6 +117,40 @@ function RunningProgress({ groups }) {
   );
 }
 
+function UsageBar({ label, percentage, detail }) {
+  const formatted = percentage.toLocaleString("en", { maximumFractionDigits: 1 });
+  return (
+    <div class="mb-3">
+      <div class="d-flex justify-content-between gap-3 mb-2">
+        <span class="fw-semibold">{label}</span>
+        <span>{formatted}%{detail && ` (${detail})`}</span>
+      </div>
+      <div class="progress" role="progressbar" aria-label={`${label} usage`}
+        aria-valuenow={percentage} aria-valuemin={0} aria-valuemax={100}
+        aria-valuetext={`${formatted}%${detail ? `, ${detail}` : ""}`}>
+        <div class="progress-bar" style={{ width: `${percentage}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function HostUsage({ data }) {
+  if (!data) return null;
+
+  return (
+    <div class="mb-4">
+      {[
+        { label: "CPU", percentage: data.cpu.percentage },
+        ...["memory", "disk"].map(key => ({
+          label: key === "disk" ? "Disk (host root filesystem)" : "Memory",
+          percentage: data[key].used / data[key].total * 100,
+          detail: `${formatBytes(data[key].used)} / ${formatBytes(data[key].total)}`,
+        })),
+      ].map(metric => <UsageBar key={metric.label} {...metric} />)}
+    </div>
+  );
+}
+
 function StatusPanel({ data, now }) {
   if (!data) return null;
 
@@ -192,8 +229,10 @@ export default function App() {
   const [now, setNow] = useState(() => new Date().toISOString());
   const [status, setStatus] = useState(null);
   const [events, setEvents] = useState(null);
+  const [metrics, setMetrics] = useState(null);
   const [statusError, setStatusError] = useState("");
   const [eventsError, setEventsError] = useState("");
+  const [metricsError, setMetricsError] = useState("");
   const [sessionError, setSessionError] = useState("");
   const [connected, setConnected] = useState(false);
   const [connectionMessage, setConnectionMessage] = useState("Connecting to live updates...");
@@ -246,8 +285,14 @@ export default function App() {
       setEventsError("");
     });
 
+    socket.on("metrics", data => {
+      setMetrics(data);
+      setMetricsError("");
+    });
+
     socket.on("status:error", ({ message }) => setStatusError(message));
     socket.on("events:error", ({ message }) => setEventsError(message));
+    socket.on("metrics:error", ({ message }) => setMetricsError(message));
     socket.connect();
 
     async function renewSession() {
@@ -310,6 +355,14 @@ export default function App() {
         aria-labelledby="status-tab"
         hidden={activeTab !== "status"}
       >
+        <h2 class="h5">Host usage</h2>
+        <Notice
+          id="metrics-state"
+          message={metricsError || (metrics ? `Host usage updated ${relativeTime(metrics.checked_at, now)}.` : "Loading host usage...")}
+          warning={Boolean(metricsError)}
+          live={Boolean(metricsError) || !metrics}
+        />
+        <HostUsage data={metrics} />
         <Notice
           id="status-state"
           message={statusError || (status ? "Container status is up to date." : "Loading container status...")}
@@ -341,7 +394,7 @@ export default function App() {
         </p>
       </section>
       <p class="small text-body-secondary">
-        Container status is checked every 30 seconds and events every 5 seconds.
+        Container status is checked every 30 seconds; events and host usage are checked approximately every 5 seconds.
         Updates arrive over Socket.IO without page reloads.
       </p>
     </>

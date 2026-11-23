@@ -163,11 +163,23 @@ export async function readEvents(fetchDocker = fetch) {
   return data;
 }
 
+export async function readMetrics(fetchDocker = fetch) {
+  const data = await readProxy("/metrics", fetchDocker);
+  const validUsage = usage => usage && Number.isFinite(usage.used) && Number.isFinite(usage.total) &&
+    usage.total > 0 && usage.used >= 0 && usage.used <= usage.total;
+  if (!data || !Number.isFinite(data.cpu?.percentage) || data.cpu.percentage < 0 ||
+      data.cpu.percentage > 100 || !validUsage(data.memory) || !validUsage(data.disk)) {
+    throw new Error("Invalid host usage response");
+  }
+  parseTime(data.checked_at);
+  return data;
+}
+
 export function sendError(request, response, code, message) {
   response.status(code).json({ error: message });
 }
 
-export function createReaders(loadStatus, loadEvents) {
+export function createReaders(loadStatus, loadEvents, loadMetrics) {
   let active = 0;
 
   async function read(load) {
@@ -187,5 +199,6 @@ export function createReaders(loadStatus, loadEvents) {
   return {
     status: () => read(loadStatus),
     events: () => read(loadEvents),
+    metrics: () => read(loadMetrics),
   };
 }

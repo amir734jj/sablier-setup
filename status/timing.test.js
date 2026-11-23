@@ -148,7 +148,15 @@ async function startServer(t, loadStatus = async () => summarize([]), loadEvents
   await writeFile(join(webRoot, "assets", "dashboard.js"), 'console.info("Frontend build fixture");');
   await writeFile(join(webRoot, "assets", "dashboard.css"), "body { color: inherit; }");
 
-  const instance = createStatusServer(loadStatus, loadEvents, { webRoot });
+  const instance = createStatusServer(loadStatus, loadEvents, {
+    webRoot,
+    loadMetrics: async () => ({
+      checked_at: "2026-11-02T16:00:00.000Z",
+      cpu: { percentage: 25 },
+      memory: { used: 512, total: 1024 },
+      disk: { used: 25, total: 100 },
+    }),
+  });
   const { server, io } = instance;
 
   server.listen(0, "127.0.0.1");
